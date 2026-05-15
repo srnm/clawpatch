@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "docs/**"
+      - "website/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -27,12 +27,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions/configure-pages@v6
-      - uses: actions/jekyll-build-pages@v1
-        with:
-          source: docs
-          destination: _site
+      - name: Verify Pages artifact source
+        run: |
+          test -f website/index.html
+          test -f website/CNAME
+          test -f website/.nojekyll
+          grep -q "Automated Code Review" website/index.html
+          ! grep -R "Jekyll v" website
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: _site
+          path: website
       - id: deployment
         uses: actions/deploy-pages@v5

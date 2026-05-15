@@ -30,6 +30,7 @@ export async function configSeeds(root: string): Promise<FeatureSeed[]> {
         command: null,
         tags: ["config"],
         trustBoundaries: ["process-exec", "filesystem"],
+        skipNearbyTests: true,
       });
     }
   }

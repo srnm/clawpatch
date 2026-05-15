@@ -1,19 +1,29 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { pathExists } from "../fs.js";
 import {
   normalize,
+  isSampleProjectPath,
   packageTrustBoundaries,
   pathMatchesPrefix,
+  shouldSkip,
   stripSwiftComments,
   walk,
 } from "./shared.js";
-import { FeatureSeed } from "./types.js";
+import { FeatureSeed, SeedFileRef, SeedTestRef } from "./types.js";
 
 export async function swiftSeeds(root: string): Promise<FeatureSeed[]> {
-  if (!(await pathExists(join(root, "Package.swift")))) {
-    return [];
+  const packageRoots = await discoverSwiftPackageRoots(root);
+  const seeds: FeatureSeed[] = [];
+  for (const packageRoot of packageRoots) {
+    const packagePath = packageRoot === "." ? root : join(root, packageRoot);
+    const packageSeeds = await swiftPackageSeeds(packagePath);
+    seeds.push(...packageSeeds.map((seed) => prefixSwiftSeed(seed, packageRoot)));
   }
+  return seeds;
+}
+
+async function swiftPackageSeeds(root: string): Promise<FeatureSeed[]> {
   const seeds: FeatureSeed[] = [];
   const manifestTargets = await swiftManifestTargets(root);
   const swiftTestCommand = "swift test";
@@ -103,6 +113,113 @@ export async function swiftSeeds(root: string): Promise<FeatureSeed[]> {
     });
   }
   return seeds;
+}
+
+async function discoverSwiftPackageRoots(root: string): Promise<string[]> {
+  const roots: string[] = [];
+  await discoverSwiftPackageRootsInto(root, ".", 5, roots);
+  return roots.toSorted((left, right) => {
+    if (left === ".") {
+      return -1;
+    }
+    if (right === ".") {
+      return 1;
+    }
+    return left.localeCompare(right);
+  });
+}
+
+async function discoverSwiftPackageRootsInto(
+  root: string,
+  dir: string,
+  remainingDepth: number,
+  roots: string[],
+): Promise<void> {
+  if (
+    remainingDepth < 0 ||
+    (dir !== "." && (shouldSkip(dir) || isSampleProjectPath(dir) || isSwiftVendoredPath(dir)))
+  ) {
+    return;
+  }
+  const full = dir === "." ? root : join(root, dir);
+  if (!(await pathExists(full))) {
+    return;
+  }
+  const info = await lstat(full);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    return;
+  }
+  if (await pathExists(join(full, "Package.swift"))) {
+    roots.push(dir);
+  }
+  for (const entry of await readdir(full)) {
+    const child = dir === "." ? entry : `${dir}/${entry}`;
+    if (shouldSkip(child) || isSampleProjectPath(child) || isSwiftVendoredPath(child)) {
+      continue;
+    }
+    const childInfo = await lstat(join(full, entry));
+    if (childInfo.isDirectory() && !childInfo.isSymbolicLink()) {
+      await discoverSwiftPackageRootsInto(root, child, remainingDepth - 1, roots);
+    }
+  }
+}
+
+function isSwiftVendoredPath(path: string): boolean {
+  return path
+    .split("/")
+    .some((part) => ["Pods", "Carthage", "SourcePackages", ".swiftpm"].includes(part));
+}
+
+function prefixSwiftSeed(seed: FeatureSeed, packageRoot: string): FeatureSeed {
+  if (packageRoot === ".") {
+    return seed;
+  }
+  const testCommand = seed.testCommand === null ? null : `swift test --package-path ${packageRoot}`;
+  const prefixed: FeatureSeed = {
+    ...seed,
+    title: `${seed.title} (${packageRoot})`,
+    summary: `${seed.summary} Package root: ${packageRoot}.`,
+    entryPath: prefixSwiftPath(packageRoot, seed.entryPath),
+    testCommand,
+  };
+  const ownedFiles = prefixFileRefs(packageRoot, seed.ownedFiles);
+  const contextFiles = prefixFileRefs(packageRoot, seed.contextFiles);
+  const tests = prefixTestRefs(packageRoot, seed.tests);
+  if (ownedFiles !== undefined) {
+    prefixed.ownedFiles = ownedFiles;
+  }
+  if (contextFiles !== undefined) {
+    prefixed.contextFiles = contextFiles;
+  }
+  if (tests !== undefined) {
+    prefixed.tests = tests;
+  }
+  if (seed.testPrefixes !== undefined) {
+    prefixed.testPrefixes = seed.testPrefixes.map((prefix) => prefixSwiftPath(packageRoot, prefix));
+  }
+  return prefixed;
+}
+
+function prefixFileRefs(
+  packageRoot: string,
+  refs: SeedFileRef[] | undefined,
+): SeedFileRef[] | undefined {
+  return refs?.map((ref) => ({ ...ref, path: prefixSwiftPath(packageRoot, ref.path) }));
+}
+
+function prefixTestRefs(
+  packageRoot: string,
+  refs: SeedTestRef[] | undefined,
+): SeedTestRef[] | undefined {
+  return refs?.map((ref) => ({
+    ...ref,
+    path: prefixSwiftPath(packageRoot, ref.path),
+    command: ref.command === null ? null : `swift test --package-path ${packageRoot}`,
+  }));
+}
+
+function prefixSwiftPath(packageRoot: string, path: string): string {
+  return path === "" ? packageRoot : `${packageRoot}/${path}`;
 }
 
 async function swiftManifestTargets(root: string): Promise<{

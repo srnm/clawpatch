@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Improved Node/TypeScript mapping for large workspaces by splitting package source trees into bounded review groups with package-local tests.
+- Added generic nested SwiftPM, Apple/Xcode, and Gradle/Android app mapping.
+
 ## 0.1.0 - 2026-05-15
 
 - Added the initial strict TypeScript `clawpatch` CLI scaffold with `init`, `map`, `status`, `review`, `report`, `fix`, `revalidate`, `doctor`, and `clean-locks`.

@@ -169,12 +169,18 @@ export function shouldSkip(path: string): boolean {
     return false;
   }
   return (
-    /(^|\/)(node_modules|dist|build|coverage|\.git|\.clawpatch)(\/|$)/u.test(path) ||
+    /(^|\/)(node_modules|dist|build|coverage|\.build|\.git|\.clawpatch|\.worktrees)(\/|$)/u.test(
+      path,
+    ) ||
     path === "target" ||
     path.startsWith("target/") ||
     path === ".build" ||
     path.startsWith(".build/")
   );
+}
+
+export function isSampleProjectPath(path: string): boolean {
+  return /(^|\/)(fixtures|__fixtures__|testdata)(\/|$)/u.test(path);
 }
 
 export function packageKind(name: string): FeatureSeed["kind"] {

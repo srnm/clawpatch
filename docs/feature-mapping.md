@@ -28,15 +28,29 @@ Supported deterministic mappers today:
 
 - npm package bins
 - selected package scripts
+- Node/TypeScript workspace packages from `package.json` workspaces, `pnpm-workspace.yaml`, and common package folders
+- bounded Node/TypeScript source groups under `src/`, `lib/`, `app/`, `pages/`, and `scripts/`
 - Next.js `app/` and `pages/` routes
 - Go `cmd/*/main.go`
 - Go `internal/*` packages
 - Rust Cargo commands, libraries, workspace crates, and integration tests
 - SwiftPM executable targets, library targets, and test suites
+- nested SwiftPM packages
+- Apple/Xcode projects from `project.yml`, `.xcodeproj`, or `.xcworkspace`
+- Gradle/Android modules from `settings.gradle(.kts)` and `build.gradle(.kts)`
 - common config files
 
 The mapper does not call a model. It uses repo conventions and cheap filesystem
 walks, skips symlinked directories, and excludes common generated folders.
+
+For large Node/TypeScript repositories, source groups are recursively split by
+directory and then chunked so one feature owns at most a small bounded set of
+files. Package-local tests and package context files are attached when they can
+be found cheaply.
+
+Native app mappers use the same bounded grouping model. SwiftPM packages can be
+discovered below the repo root, Apple projects are grouped by Swift source area,
+and Gradle modules are grouped from `src/main`, `src/test`, and `src/androidTest`.
 
 Known gaps:
 

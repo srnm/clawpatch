@@ -27,6 +27,7 @@ export type FeatureSeed = {
   tests?: SeedTestRef[];
   testCommand?: string | null;
   testPrefixes?: string[];
+  skipNearbyTests?: boolean;
 };
 
 export type FeatureMapper = {

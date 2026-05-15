@@ -127,7 +127,7 @@ async function languageDefaultCommands(
       test: "cargo test --workspace",
     };
   }
-  if (languages.includes("swift")) {
+  if (languages.includes("swift") && (await pathExists(join(root, "Package.swift")))) {
     return {
       typecheck: "swift build",
       lint: null,
@@ -172,9 +172,12 @@ async function detectPackageManagers(root: string): Promise<string[]> {
     ["bun", "bun.lockb"],
   ];
   for (const [name, file] of nodeChecks) {
-    if (await pathExists(join(root, file))) {
+    if ((await pathExists(join(root, file))) && !found.includes(name)) {
       found.push(name);
     }
+  }
+  if ((await pathExists(join(root, "pnpm-workspace.yaml"))) && !found.includes("pnpm")) {
+    found.push("pnpm");
   }
   if (
     !found.some((name) => nodePackageManagers.has(name)) &&
@@ -192,10 +195,25 @@ async function detectPackageManagers(root: string): Promise<string[]> {
       found.push(name);
     }
   }
+  if (!found.includes("swiftpm") && (await containsFileNamed(root, "Package.swift", 5))) {
+    found.push("swiftpm");
+  }
+  if (
+    !found.includes("gradle") &&
+    ((await containsFileNamed(root, "settings.gradle", 5)) ||
+      (await containsFileNamed(root, "settings.gradle.kts", 5)) ||
+      (await containsFileNamed(root, "build.gradle", 5)) ||
+      (await containsFileNamed(root, "build.gradle.kts", 5)))
+  ) {
+    found.push("gradle");
+  }
   return found;
 }
 
 async function hasSwiftTests(root: string): Promise<boolean> {
+  if (!(await pathExists(join(root, "Package.swift")))) {
+    return false;
+  }
   const manifest = stripSwiftComments(await readFile(join(root, "Package.swift"), "utf8"));
   if (/\.testTarget\s*\(/u.test(manifest)) {
     return true;
@@ -267,7 +285,83 @@ async function detectLanguages(root: string): Promise<string[]> {
       languages.push(language);
     }
   }
+  if (
+    !languages.includes("swift") &&
+    ((await containsFileNamed(root, "Package.swift", 5)) ||
+      (await containsFileWithExtension(root, ".swift", 5)))
+  ) {
+    languages.push("swift");
+  }
+  if (
+    !languages.includes("kotlin") &&
+    ((await containsFileWithExtension(root, ".kt", 5)) ||
+      (await containsFileWithExtension(root, ".kts", 5)))
+  ) {
+    languages.push("kotlin");
+  }
   return languages;
+}
+
+async function containsFileNamed(root: string, name: string, maxDepth: number): Promise<boolean> {
+  return containsFileMatching(root, maxDepth, (entry) => entry === name);
+}
+
+async function containsFileWithExtension(
+  root: string,
+  extension: string,
+  maxDepth: number,
+): Promise<boolean> {
+  return containsFileMatching(root, maxDepth, (entry) => entry.endsWith(extension));
+}
+
+async function containsFileMatching(
+  dir: string,
+  remainingDepth: number,
+  predicate: (entry: string) => boolean,
+): Promise<boolean> {
+  if (remainingDepth < 0 || !(await pathExists(dir))) {
+    return false;
+  }
+  const dirInfo = await lstat(dir);
+  if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink()) {
+    return false;
+  }
+  for (const entry of await readdir(dir)) {
+    if (
+      [
+        "node_modules",
+        "dist",
+        "build",
+        "target",
+        ".build",
+        ".swiftpm",
+        ".git",
+        ".clawpatch",
+        ".worktrees",
+        "fixtures",
+        "__fixtures__",
+        "testdata",
+        "Pods",
+        "Carthage",
+        "SourcePackages",
+        "DerivedData",
+      ].includes(entry)
+    ) {
+      continue;
+    }
+    const full = join(dir, entry);
+    const info = await lstat(full);
+    if (info.isSymbolicLink()) {
+      continue;
+    }
+    if (info.isFile() && predicate(entry)) {
+      return true;
+    }
+    if (info.isDirectory() && (await containsFileMatching(full, remainingDepth - 1, predicate))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function stripLineComments(source: string, marker: "//"): string {

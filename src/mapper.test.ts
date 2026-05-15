@@ -31,10 +31,16 @@ describe("mapFeatures", () => {
       "app/users/[id]/page.tsx",
       "export default function Page() { return null; }\n",
     );
+    await writeFixture(root, "app/users/[id]/page.test.tsx", "test('route', () => {});\n");
     await writeFixture(
       root,
       "app/target/page.tsx",
       "export default function TargetPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "app/fixtures/page.tsx",
+      "export default function FixturesPage() { return null; }\n",
     );
 
     const project = await detectProject(root);
@@ -47,9 +53,13 @@ describe("mapFeatures", () => {
     expect(titles).toContain("Package script test");
     expect(titles).toContain("Route /users/:id");
     expect(titles).toContain("Route /target");
+    expect(titles).toContain("Route /fixtures");
     expect(
       result.features.find((feature) => feature.title === "CLI command fixture")?.tests,
     ).toEqual([]);
+    expect(result.features.find((feature) => feature.title === "Route /users/:id")?.tests).toEqual([
+      { path: "app/users/[id]/page.test.tsx", command: "npm run test" },
+    ]);
   });
 
   it("maps generated package bins back to source entries", async () => {
@@ -61,6 +71,7 @@ describe("mapFeatures", () => {
     );
     await writeFixture(root, "dist/cli.js", "#!/usr/bin/env node\n");
     await writeFixture(root, "src/cli.ts", "export function main() {}\n");
+    await writeFixture(root, "src/cli.test.ts", "test('cli', () => {});\n");
 
     const project = await detectProject(root);
     const result = await mapFeatures(root, project, []);
@@ -68,7 +79,462 @@ describe("mapFeatures", () => {
 
     expect(cli?.entrypoints[0]?.path).toBe("src/cli.ts");
     expect(cli?.ownedFiles).toContainEqual({ path: "src/cli.ts", reason: "entrypoint" });
+    expect(cli?.tests).toEqual([{ path: "src/cli.test.ts", command: null }]);
     expect(cli?.summary).toContain("source src/cli.ts");
+  });
+
+  it("maps workspace packages and splits large Node source groups", async () => {
+    const root = await fixtureRoot("clawpatch-node-workspace-map-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "workspace-root",
+          scripts: { test: "vitest run" },
+          workspaces: [
+            "*",
+            "packages/*",
+            "packages/**/plugins/*",
+            "packages/*/examples/*",
+            "plugins/*",
+            "../*",
+            "linked-pkg",
+            "linked/*",
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "pnpm-workspace.yaml",
+      "packages:\n  - packages/*\n  - packages/**/plugins/*\n  - plugins/*\n  - '!packages/legacy'\n  - '!packages/*/examples/ignored'\n",
+    );
+    await writeFixture(
+      root,
+      "packages/core/package.json",
+      JSON.stringify(
+        { name: "@scope/core", bin: { corecli: "src/cli.ts" }, scripts: { test: "vitest run" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(root, "packages/core/AGENTS.md", "Core package notes.\n");
+    await writeFixture(root, "packages/core/src/cli.ts", "export function main() {}\n");
+    await writeFixture(root, "packages/core/src/cli.test.ts", "test('cli', () => {});\n");
+    for (let index = 0; index < 14; index += 1) {
+      await writeFixture(
+        root,
+        `packages/core/src/agents/file${String(index).padStart(2, "0")}.ts`,
+        `export const value${index} = ${index};\n`,
+      );
+    }
+    await writeFixture(
+      root,
+      "packages/core/src/gateway/gateway.ts",
+      "export function gateway() {}\n",
+    );
+    await writeFixture(
+      root,
+      "packages/core/src/gateway/gateway.test.ts",
+      "import { gateway } from './gateway';\n",
+    );
+    await writeFixture(
+      root,
+      "plugins/chat/package.json",
+      JSON.stringify({ name: "chat-plugin" }, null, 2),
+    );
+    await writeFixture(root, "plugins/chat/src/index.ts", "export function activate() {}\n");
+    await writeFixture(
+      root,
+      "packages/core/examples/demo/package.json",
+      JSON.stringify({ name: "demo-example" }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "packages/core/examples/demo/src/index.ts",
+      "export function demo() {}\n",
+    );
+    await writeFixture(
+      root,
+      "packages/core/nested/plugins/worker/package.json",
+      JSON.stringify({ name: "worker-plugin" }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "packages/core/nested/plugins/worker/src/index.ts",
+      "export function worker() {}\n",
+    );
+    await writeFixture(
+      root,
+      "packages/core/examples/ignored/package.json",
+      JSON.stringify({ name: "ignored-example" }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "packages/core/examples/ignored/src/index.ts",
+      "export function ignored() {}\n",
+    );
+    await writeFixture(root, "tools/package.json", JSON.stringify({ name: "root-tool" }, null, 2));
+    await writeFixture(root, "tools/src/index.ts", "export function tool() {}\n");
+    await writeFixture(
+      root,
+      "packages/legacy/package.json",
+      JSON.stringify({ name: "legacy-package" }, null, 2),
+    );
+    await writeFixture(root, "packages/legacy/src/index.ts", "export function legacy() {}\n");
+    await writeFixture(
+      root,
+      "../outside-workspace/package.json",
+      JSON.stringify({ name: "outside-workspace" }, null, 2),
+    );
+    await writeFixture(root, "../outside-workspace/src/index.ts", "export function outside() {}\n");
+    await writeFixture(
+      root,
+      "../outside-workspace/evil/package.json",
+      JSON.stringify({ name: "evil-package" }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "../outside-workspace/evil/src/index.ts",
+      "export function evil() {}\n",
+    );
+    await symlink(join(root, "../outside-workspace"), join(root, "linked-pkg"), "dir");
+    await symlink(join(root, "../outside-workspace"), join(root, "linked"), "dir");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+    const agentGroups = result.features.filter(
+      (feature) =>
+        feature.source === "node-source-group" &&
+        feature.entrypoints[0]?.symbol?.startsWith("packages/core/src/agents") === true,
+    );
+    const gateway = result.features.find(
+      (feature) => feature.entrypoints[0]?.symbol === "packages/core/src/gateway",
+    );
+    const cli = result.features.find((feature) => feature.title === "CLI command corecli");
+
+    expect(titles).toContain("Node package @scope/core");
+    expect(titles).toContain("Node package chat-plugin");
+    expect(titles).toContain("Node package demo-example");
+    expect(titles).toContain("Node package worker-plugin");
+    expect(titles).toContain("Node package root-tool");
+    expect(titles).not.toContain("Node package legacy-package");
+    expect(titles).not.toContain("Node package ignored-example");
+    expect(titles).not.toContain("Node package outside-workspace");
+    expect(titles).not.toContain("Node package evil-package");
+    expect(titles).toContain("Node source plugins/chat/src");
+    expect(agentGroups.length).toBeGreaterThan(1);
+    expect(agentGroups.every((feature) => feature.ownedFiles.length <= 12)).toBe(true);
+    expect(gateway?.ownedFiles).toEqual([
+      {
+        path: "packages/core/src/gateway/gateway.ts",
+        reason: "source group packages/core/src/gateway",
+      },
+    ]);
+    expect(gateway?.tests).toEqual([
+      {
+        path: "packages/core/src/gateway/gateway.test.ts",
+        command: "pnpm --dir packages/core test",
+      },
+    ]);
+    expect(cli?.tests).toEqual([
+      { path: "packages/core/src/cli.test.ts", command: "pnpm --dir packages/core test" },
+    ]);
+    expect(
+      result.features.find((feature) => feature.title === "Node package @scope/core")?.contextFiles,
+    ).toContainEqual({ path: "packages/core/AGENTS.md", reason: "package context" });
+    expect(project.detected.packageManagers).toContain("pnpm");
+  });
+
+  it("maps pnpm workspace packages without a root package manifest", async () => {
+    const root = await fixtureRoot("clawpatch-pnpm-workspace-only-map-");
+    await writeFixture(root, "pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+    await writeFixture(
+      root,
+      "packages/core/package.json",
+      JSON.stringify({ name: "@scope/core", scripts: { test: "vitest run" } }, null, 2),
+    );
+    await writeFixture(root, "packages/core/src/index.ts", "export const core = true;\n");
+    await writeFixture(root, "packages/core/src/index.test.ts", "import './index';\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(project.detected.packageManagers).toContain("pnpm");
+    expect(titles).toContain("Node package @scope/core");
+    expect(titles).toContain("Node source packages/core/src");
+    expect(
+      result.features.find((feature) => feature.title === "Node source packages/core/src")?.tests,
+    ).toEqual([
+      { path: "packages/core/src/index.test.ts", command: "pnpm --dir packages/core test" },
+    ]);
+  });
+
+  it("maps nested SwiftPM, Apple, and Android Gradle app surfaces", async () => {
+    const root = await fixtureRoot("clawpatch-native-app-map-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "native-root" }, null, 2));
+    await writeFixture(
+      root,
+      "apps/macos/Package.swift",
+      [
+        "// swift-tools-version: 6.0",
+        "import PackageDescription",
+        "let package = Package(",
+        '  name: "MacApp",',
+        '  targets: [.executableTarget(name: "MacApp"), .testTarget(name: "MacAppTests", dependencies: ["MacApp"])]',
+        ")",
+      ].join("\n"),
+    );
+    await writeFixture(root, "apps/macos/Sources/MacApp/main.swift", "@main struct App {}\n");
+    await writeFixture(root, "apps/macos/Tests/MacAppTests/MacAppTests.swift", "import Testing\n");
+    await writeFixture(root, "apps/ios/project.yml", "name: MobileApp\n");
+    await writeFixture(root, "apps/ios/Sources/App.swift", "@main struct MobileApp {}\n");
+    await writeFixture(
+      root,
+      "apps/ios/ShareExtension/ShareViewController.swift",
+      "final class ShareViewController {}\n",
+    );
+    await writeFixture(root, "apps/ios/Tests/AppTests.swift", "import Testing\n");
+    await writeFixture(root, "apps/ios/Pods/Vendor.swift", "struct Vendor {}\n");
+    await writeFixture(
+      root,
+      "apps/ios/SourcePackages/checkouts/Dependency/Dep.swift",
+      "struct Dep {}\n",
+    );
+    await writeFixture(
+      root,
+      "apps/ios/SourcePackages/checkouts/Dependency/Package.swift",
+      'import PackageDescription\nlet package = Package(name: "Dependency")\n',
+    );
+    await writeFixture(root, "apps/android/settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(
+      root,
+      "apps/android/build.gradle.kts",
+      'plugins { id("com.android.application") version "1.0" apply false }\n',
+    );
+    await writeFixture(
+      root,
+      "apps/android/app/build.gradle.kts",
+      'plugins { id("com.android.application") }\n',
+    );
+    await writeFixture(root, "apps/android/app/src/main/AndroidManifest.xml", "<manifest />\n");
+    await writeFixture(
+      root,
+      "apps/android/app/src/main/java/com/example/MainActivity.kt",
+      "class MainActivity\n",
+    );
+    await writeFixture(
+      root,
+      "apps/android/app/src/test/java/com/example/MainActivityTest.kt",
+      "class MainActivityTest\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+    const mac = result.features.find((feature) =>
+      feature.title.startsWith("Swift executable MacApp"),
+    );
+    const ios = result.features.find(
+      (feature) => feature.title === "Apple source apps/ios/Sources",
+    );
+    const android = result.features.find(
+      (feature) => feature.title === "Gradle source apps/android/app/src",
+    );
+
+    expect(project.detected.languages).toContain("swift");
+    expect(project.detected.languages).toContain("kotlin");
+    expect(project.detected.packageManagers).toContain("swiftpm");
+    expect(project.detected.packageManagers).toContain("gradle");
+    expect(project.detected.commands.typecheck).toBeNull();
+    expect(project.detected.commands.test).toBeNull();
+    expect(titles).toContain("Swift executable MacApp (apps/macos)");
+    expect(titles).toContain("Apple project apps/ios");
+    expect(titles).toContain("Apple source apps/ios/ShareExtension");
+    expect(titles).toContain("Gradle module apps/android/app");
+    expect(titles.some((title) => title.includes("Dependency"))).toBe(false);
+    expect(mac?.entrypoints[0]?.path).toBe("apps/macos/Sources/MacApp/main.swift");
+    expect(mac?.tests).toEqual([
+      {
+        path: "apps/macos/Tests/MacAppTests/MacAppTests.swift",
+        command: "swift test --package-path apps/macos",
+      },
+    ]);
+    expect(ios?.ownedFiles.map((file) => file.path)).toEqual(["apps/ios/Sources/App.swift"]);
+    expect(
+      result.features.flatMap((feature) => feature.ownedFiles.map((file) => file.path)),
+    ).not.toContain("apps/ios/Pods/Vendor.swift");
+    expect(
+      result.features.flatMap((feature) => feature.ownedFiles.map((file) => file.path)),
+    ).not.toContain("apps/ios/SourcePackages/checkouts/Dependency/Dep.swift");
+    expect(android?.ownedFiles.map((file) => file.path).toSorted()).toEqual([
+      "apps/android/app/src/main/AndroidManifest.xml",
+      "apps/android/app/src/main/java/com/example/MainActivity.kt",
+    ]);
+    expect(android?.tests).toEqual([
+      { path: "apps/android/app/src/test/java/com/example/MainActivityTest.kt", command: null },
+    ]);
+  });
+
+  it("normalizes root Gradle source groups", async () => {
+    const root = await fixtureRoot("clawpatch-root-gradle-map-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("java") }\n');
+    await writeFixture(root, "src/main/java/com/example/App.kt", "class App\n");
+    await writeFixture(root, "src/test/java/com/example/AppTest.kt", "class AppTest\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("Gradle source src");
+    expect(titles).toContain("Gradle test suite src");
+    expect(titles.some((title) => title.includes("./src"))).toBe(false);
+  });
+
+  it("maps build.gradle-only roots without empty Gradle groups", async () => {
+    const root = await fixtureRoot("clawpatch-gradle-build-only-map-");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("java") }\n');
+    await writeFixture(root, "src/main/java/com/acme/test/Foo.kt", "class Foo\n");
+    await writeFixture(root, "src/test/java/com/acme/FooTest.kt", "class FooTest\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const gradleFeatures = result.features.filter((feature) =>
+      feature.source.startsWith("gradle-"),
+    );
+    const source = result.features.find((feature) => feature.title === "Gradle source src");
+
+    expect(gradleFeatures.length).toBeGreaterThan(0);
+    expect(source?.ownedFiles.map((file) => file.path)).toContain(
+      "src/main/java/com/acme/test/Foo.kt",
+    );
+    expect(gradleFeatures.every((feature) => feature.ownedFiles.length > 0)).toBe(true);
+  });
+
+  it("maps nested build.gradle-only Gradle apps", async () => {
+    const root = await fixtureRoot("clawpatch-nested-gradle-build-only-map-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(root, "apps/android/build.gradle.kts", 'plugins { id("java") }\n');
+    await writeFixture(root, "apps/android/src/main/java/com/example/App.kt", "class App\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(project.detected.packageManagers).toContain("gradle");
+    expect(titles).toContain("Gradle module apps/android");
+    expect(titles).toContain("Gradle source apps/android/src");
+  });
+
+  it("ignores vendored SwiftPM manifests during detection", async () => {
+    const root = await fixtureRoot("clawpatch-vendored-swiftpm-detect-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(root, "apps/ios/project.yml", "name: MobileApp\n");
+    await writeFixture(
+      root,
+      "apps/ios/SourcePackages/checkouts/Dependency/Package.swift",
+      'import PackageDescription\nlet package = Package(name: "Dependency")\n',
+    );
+
+    const project = await detectProject(root);
+
+    expect(project.detected.languages).not.toContain("swift");
+    expect(project.detected.packageManagers).not.toContain("swiftpm");
+  });
+
+  it("detects Swift sources in pure Apple projects", async () => {
+    const root = await fixtureRoot("clawpatch-pure-apple-swift-detect-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(root, "apps/ios/project.yml", "name: MobileApp\n");
+    await writeFixture(root, "apps/ios/Sources/App.swift", "@main struct MobileApp {}\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(project.detected.languages).toContain("swift");
+    expect(project.detected.packageManagers).not.toContain("swiftpm");
+    expect(titles).toContain("Apple source apps/ios/Sources");
+  });
+
+  it("chooses Apple project manifests deterministically", async () => {
+    const root = await fixtureRoot("clawpatch-apple-manifest-order-map-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(root, "apps/ios/B.xcodeproj", "");
+    await writeFixture(root, "apps/ios/A.xcworkspace", "");
+    await writeFixture(root, "apps/ios/Sources/App.swift", "@main struct MobileApp {}\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const apple = result.features.find((feature) => feature.title === "Apple project apps/ios");
+
+    expect(apple?.entrypoints[0]?.path).toBe("apps/ios/A.xcworkspace");
+  });
+
+  it("maps Apple projects that also contain SwiftPM manifests", async () => {
+    const root = await fixtureRoot("clawpatch-hybrid-apple-swiftpm-map-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(root, "apps/ios/project.yml", "name: HybridApp\n");
+    await writeFixture(
+      root,
+      "apps/ios/Package.swift",
+      `// swift-tools-version: 6.0
+import PackageDescription
+let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
+`,
+    );
+    await writeFixture(root, "apps/ios/Sources/HybridApp/App.swift", "public struct App {}\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(project.detected.packageManagers).toContain("swiftpm");
+    expect(titles).toContain("Apple project apps/ios");
+    expect(titles).toContain("Apple source apps/ios/Sources");
+    expect(titles).toContain("Swift target HybridApp (apps/ios)");
+    expect(titles).not.toContain("Apple source apps/ios/Package.swift");
+    expect(
+      result.features
+        .filter((feature) => feature.source === "apple-source-group")
+        .flatMap((feature) => feature.ownedFiles.map((file) => file.path)),
+    ).not.toContain("apps/ios/Package.swift");
+  });
+
+  it("ignores native sample projects under fixtures and testdata during detection", async () => {
+    const root = await fixtureRoot("clawpatch-native-fixture-detect-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "host" }, null, 2));
+    await writeFixture(
+      root,
+      "tests/fixtures/Package.swift",
+      'import PackageDescription\nlet package = Package(name: "Fixture")\n',
+    );
+    await writeFixture(root, "tests/fixtures/Sources/Fixture/main.swift", "@main struct App {}\n");
+    await writeFixture(root, "testdata/build.gradle.kts", 'plugins { id("java") }\n');
+    await writeFixture(root, "testdata/src/main/java/com/example/App.kt", "class App\n");
+    await writeFixture(root, "fixtures/ios/project.yml", "name: FixtureApp\n");
+    await writeFixture(root, "fixtures/ios/Sources/App.swift", "@main struct App {}\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const nativeFeatures = result.features.filter(
+      (feature) =>
+        feature.source.startsWith("swift-") ||
+        feature.source.startsWith("apple-") ||
+        feature.source.startsWith("gradle-"),
+    );
+
+    expect(project.detected.languages).not.toContain("swift");
+    expect(project.detected.languages).not.toContain("kotlin");
+    expect(project.detected.packageManagers).not.toContain("swiftpm");
+    expect(project.detected.packageManagers).not.toContain("gradle");
+    expect(nativeFeatures).toEqual([]);
   });
 
   it("maps Go commands and internal packages", async () => {

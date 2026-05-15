@@ -2,6 +2,8 @@ import { nowIso } from "./fs.js";
 import { stableId } from "./id.js";
 import { configSeeds } from "./mappers/config.js";
 import { goSeeds } from "./mappers/go.js";
+import { appleSeeds } from "./mappers/apple.js";
+import { gradleSeeds } from "./mappers/gradle.js";
 import { nextSeeds } from "./mappers/next.js";
 import { nodeSeeds } from "./mappers/node.js";
 import { rustSeeds } from "./mappers/rust.js";
@@ -23,6 +25,8 @@ const featureMappers: FeatureMapper[] = [
   { name: "go", map: goSeeds },
   { name: "rust", map: rustSeeds },
   { name: "swift", map: swiftSeeds },
+  { name: "apple", map: appleSeeds },
+  { name: "gradle", map: gradleSeeds },
   { name: "config", map: configSeeds },
 ];
 
@@ -45,12 +49,15 @@ export async function mapFeatures(
       seed.command ?? seed.route ?? seed.symbol ?? "",
     ]);
     const previous = existingById.get(featureId);
-    const discoveredTests = await nearbyTests(
-      root,
-      seed.entryPath,
-      seed.testCommand ?? project.detected.commands.test,
-      seed.testPrefixes ?? [],
-    );
+    const discoveredTests =
+      seed.skipNearbyTests === true
+        ? []
+        : await nearbyTests(
+            root,
+            seed.entryPath,
+            seed.testCommand ?? project.detected.commands.test,
+            seed.testPrefixes ?? [],
+          );
     const tests = uniqueTests([...(seed.tests ?? []), ...discoveredTests]);
     const contextFiles = uniqueFileRefs([
       ...(seed.contextFiles ?? []),

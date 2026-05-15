@@ -21,7 +21,7 @@ const version = "0.1.0";
 async function main(argv: string[]): Promise<void> {
   const parsed = parseArgs(argv);
   if (parsed.help) {
-    printHelp();
+    printHelp(parsed.command);
     return;
   }
   if (parsed.version) {
@@ -108,9 +108,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
         "feature",
         "finding",
         "limit",
+        "jobs",
         "provider",
         "model",
         "output",
+        "status",
+        "severity",
+        "category",
+        "triage",
       ].includes(valueName)
     ) {
       const next = argv[index + 1];
@@ -225,7 +230,128 @@ function writeResult(result: unknown, options: GlobalOptions): void {
   process.stdout.write(`${String(result)}\n`);
 }
 
-function printHelp(): void {
+function printHelp(command = ""): void {
+  if (command === "review") {
+    process.stdout.write(`clawpatch review
+
+Usage:
+  clawpatch review [flags]
+
+Flags:
+  --feature <id>
+  --limit <n>
+  --jobs <n>        default: 10
+  --provider <name>
+  --model <name>
+  --dry-run
+  --json
+  -q, --quiet
+`);
+    return;
+  }
+  if (command === "report") {
+    process.stdout.write(`clawpatch report
+
+Usage:
+  clawpatch report [flags]
+
+Flags:
+  --status <status>
+  --severity <severity>
+  --feature <id>
+  --category <category>
+  --triage <triage>
+  --output <path>
+  --json
+`);
+    return;
+  }
+  if (command === "fix") {
+    process.stdout.write(`clawpatch fix
+
+Usage:
+  clawpatch fix --finding <id> [flags]
+
+Flags:
+  --finding <id>
+  --provider <name>
+  --model <name>
+  --dry-run
+  --json
+`);
+    return;
+  }
+  if (command === "init") {
+    process.stdout.write(`clawpatch init
+
+Usage:
+  clawpatch init [flags]
+
+Flags:
+  --force
+  --json
+`);
+    return;
+  }
+  if (command === "map") {
+    process.stdout.write(`clawpatch map
+
+Usage:
+  clawpatch map [flags]
+
+Flags:
+  --dry-run
+  --json
+`);
+    return;
+  }
+  if (command === "revalidate") {
+    process.stdout.write(`clawpatch revalidate
+
+Usage:
+  clawpatch revalidate --finding <id> [flags]
+
+Flags:
+  --finding <id>
+  --provider <name>
+  --model <name>
+  --json
+`);
+    return;
+  }
+  if (command === "status") {
+    process.stdout.write(`clawpatch status
+
+Usage:
+  clawpatch status [flags]
+
+Flags:
+  --json
+`);
+    return;
+  }
+  if (command === "doctor") {
+    process.stdout.write(`clawpatch doctor
+
+Usage:
+  clawpatch doctor [flags]
+
+Flags:
+  --json
+`);
+    return;
+  }
+  if (command === "clean-locks") {
+    process.stdout.write(`clawpatch clean-locks
+
+Usage:
+  clawpatch clean-locks [flags]
+
+Flags:
+  --json
+`);
+    return;
+  }
   process.stdout.write(`clawpatch: automated code review that lands fixes
 
 Usage:

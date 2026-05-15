@@ -33,6 +33,7 @@ import {
   PatchAttempt,
   RunRecord,
   ReviewOutput,
+  deriveFindingTriage,
 } from "./types.js";
 
 export type AppContext = {
@@ -141,6 +142,7 @@ export async function reviewCommand(
     return {
       dryRun: true,
       wouldReview: features.length,
+      jobs: reviewJobs(flags),
       featureIds: features.map((feature) => feature.featureId),
     };
   }
@@ -150,74 +152,55 @@ export async function reviewCommand(
   run.claimedFeatureIds = features.map((feature) => feature.featureId);
   await writeRun(loaded.paths, run);
   const findingIds: string[] = [];
-  for (const feature of features) {
-    let locked: FeatureRecord | null = null;
-    try {
-      const lockedFeature = lockFeature(feature, currentRunId);
-      locked = lockedFeature;
-      await writeFeature(loaded.paths, lockedFeature);
-      const prompt = await buildReviewPrompt(loaded.root, loaded.project, lockedFeature, config);
-      const output = await provider.review(loaded.root, prompt, config.provider.model);
-      const records = output.findings.map((finding) =>
-        findingFromOutput(finding, lockedFeature.featureId, currentRunId),
-      );
-      for (const finding of records) {
-        const existingFinding = await readFinding(loaded.paths, finding.findingId);
-        const merged = mergeFinding(existingFinding, finding);
-        await writeFinding(loaded.paths, merged);
-        findingIds.push(merged.findingId);
+  const errors: Array<{ message: string; code: string | null; error: unknown }> = [];
+  const jobs = Math.min(reviewJobs(flags), Math.max(features.length, 1));
+  let cursor = 0;
+  emitReviewProgress(context, "start", {
+    run: currentRunId,
+    features: features.length,
+    jobs,
+  });
+  await Promise.all(
+    Array.from({ length: jobs }, async () => {
+      while (true) {
+        const index = cursor;
+        cursor += 1;
+        const feature = features[index];
+        if (feature === undefined) {
+          return;
+        }
+        try {
+          const reviewed = await reviewFeature({
+            context,
+            loaded,
+            config,
+            provider,
+            feature,
+            currentRunId,
+            index,
+            total: features.length,
+          });
+          findingIds.push(...reviewed.findingIds);
+        } catch (error: unknown) {
+          errors.push({
+            message: error instanceof Error ? error.message : String(error),
+            code: error instanceof ClawpatchError ? error.code : null,
+            error,
+          });
+        }
       }
-      const updated: FeatureRecord = {
-        ...lockedFeature,
-        status: records.length > 0 ? "needs-fix" : "reviewed",
-        lock: null,
-        findingIds: Array.from(
-          new Set([...lockedFeature.findingIds, ...records.map((finding) => finding.findingId)]),
-        ),
-        analysisHistory: [
-          ...lockedFeature.analysisHistory,
-          {
-            runId: currentRunId,
-            kind: "review",
-            summary: `${records.length} finding(s)`,
-            provider: provider.name,
-            model: config.provider.model,
-            createdAt: nowIso(),
-          },
-        ],
-        updatedAt: nowIso(),
-      };
-      await writeFeature(loaded.paths, updated);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (locked !== null) {
-        await writeFeature(loaded.paths, {
-          ...locked,
-          status: "error",
-          lock: null,
-          analysisHistory: [
-            ...locked.analysisHistory,
-            {
-              runId: currentRunId,
-              kind: "review-error",
-              summary: message,
-              provider: provider.name,
-              model: config.provider.model,
-              createdAt: nowIso(),
-            },
-          ],
-          updatedAt: nowIso(),
-        });
-      }
-      await writeRun(loaded.paths, {
-        ...run,
-        status: "failed",
-        finishedAt: nowIso(),
-        findingIds,
-        errors: [...run.errors, { message, code: null }],
-      });
-      throw error;
-    }
+    }),
+  );
+  if (errors.length > 0) {
+    await writeRun(loaded.paths, {
+      ...run,
+      status: "failed",
+      finishedAt: nowIso(),
+      findingIds,
+      errors: errors.map(({ message, code }) => ({ message, code })),
+    });
+    emitReviewProgress(context, "failed", { run: currentRunId, errors: errors.length });
+    throw errors[0]?.error ?? new ClawpatchError("review failed", 1, "review-failed");
   }
   const finished: RunRecord = {
     ...run,
@@ -226,15 +209,22 @@ export async function reviewCommand(
     findingIds,
   };
   await writeRun(loaded.paths, finished);
+  emitReviewProgress(context, "done", {
+    run: currentRunId,
+    reviewed: features.length,
+    findings: findingIds.length,
+  });
   const reportPath = await writeMarkdownReport(
     loaded.paths.reports,
     currentRunId,
     await readFindings(loaded.paths),
+    await readFeatures(loaded.paths),
   );
   return {
     run: currentRunId,
     reviewed: features.length,
     findings: findingIds.length,
+    jobs,
     report: reportPath,
     next: findingIds.length > 0 ? `clawpatch fix --finding ${findingIds[0]}` : "clawpatch status",
   };
@@ -245,17 +235,126 @@ export async function reportCommand(
   flags: Record<string, string | boolean>,
 ): Promise<unknown> {
   const loaded = await loadProjectState(context);
-  const findings = await readFindings(loaded.paths);
-  const output = renderReport(findings);
+  const [findings, features] = await Promise.all([
+    readFindings(loaded.paths),
+    readFeatures(loaded.paths),
+  ]);
+  const filtered = filterFindings(findings, flags);
+  const output = renderReport(filtered, features);
   const outputPath = typeof flags["output"] === "string" ? resolve(flags["output"]) : null;
   if (outputPath !== null) {
     await writeFile(outputPath, output, "utf8");
   }
+  if (context.options.json) {
+    return {
+      findings: filtered.length,
+      output: outputPath,
+      items: findingSummaries(filtered, features),
+    };
+  }
   return {
     markdown: output,
     output: outputPath,
-    findings: findings.length,
+    findings: filtered.length,
   };
+}
+
+type ReviewFeatureOptions = {
+  context: AppContext;
+  loaded: Awaited<ReturnType<typeof loadProjectState>>;
+  config: ReturnType<typeof applyProviderFlags>;
+  provider: ReturnType<typeof providerByName>;
+  feature: FeatureRecord;
+  currentRunId: string;
+  index: number;
+  total: number;
+};
+
+async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingIds: string[] }> {
+  const { context, loaded, config, provider, feature, currentRunId, index, total } = options;
+  const started = Date.now();
+  let locked: FeatureRecord | null = null;
+  emitReviewProgress(context, "feature-start", {
+    index: index + 1,
+    total,
+    feature: feature.featureId,
+    title: feature.title,
+  });
+  try {
+    const lockedFeature = lockFeature(feature, currentRunId);
+    locked = lockedFeature;
+    await writeFeature(loaded.paths, lockedFeature);
+    const prompt = await buildReviewPrompt(loaded.root, loaded.project, lockedFeature, config);
+    const output = await provider.review(loaded.root, prompt, config.provider.model);
+    const records = output.findings.map((finding) =>
+      findingFromOutput(finding, lockedFeature.featureId, currentRunId),
+    );
+    const findingIds: string[] = [];
+    for (const finding of records) {
+      const existingFinding = await readFinding(loaded.paths, finding.findingId);
+      const merged = mergeFinding(existingFinding, finding);
+      await writeFinding(loaded.paths, merged);
+      findingIds.push(merged.findingId);
+    }
+    const updated: FeatureRecord = {
+      ...lockedFeature,
+      status: records.length > 0 ? "needs-fix" : "reviewed",
+      lock: null,
+      findingIds: Array.from(
+        new Set([...lockedFeature.findingIds, ...records.map((finding) => finding.findingId)]),
+      ),
+      analysisHistory: [
+        ...lockedFeature.analysisHistory,
+        {
+          runId: currentRunId,
+          kind: "review",
+          summary: `${records.length} finding(s)`,
+          provider: provider.name,
+          model: config.provider.model,
+          createdAt: nowIso(),
+        },
+      ],
+      updatedAt: nowIso(),
+    };
+    await writeFeature(loaded.paths, updated);
+    emitReviewProgress(context, "feature-done", {
+      index: index + 1,
+      total,
+      feature: feature.featureId,
+      findings: findingIds.length,
+      elapsed: `${Math.round((Date.now() - started) / 1000)}s`,
+    });
+    return { findingIds };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (locked !== null) {
+      await writeFeature(loaded.paths, {
+        ...locked,
+        status: "error",
+        lock: null,
+        analysisHistory: [
+          ...locked.analysisHistory,
+          {
+            runId: currentRunId,
+            kind: "review-error",
+            summary: message,
+            provider: provider.name,
+            model: config.provider.model,
+            createdAt: nowIso(),
+          },
+        ],
+        updatedAt: nowIso(),
+      });
+    }
+    emitReviewProgress(context, "feature-error", {
+      index: index + 1,
+      total,
+      feature: feature.featureId,
+      elapsed: `${Math.round((Date.now() - started) / 1000)}s`,
+      error: message,
+    });
+    throw error;
+  }
 }
 
 export async function revalidateCommand(
@@ -331,11 +430,13 @@ export async function fixCommand(
   };
   const prompt = await buildFixPrompt(loaded.root, finding, feature);
   if (flags["dryRun"] === true) {
+    const validationCommands = collectValidationCommands(config.commands);
     return {
       finding: finding.findingId,
       dryRun: true,
       patchAttempt: patchAttemptId,
       plan: initialPatch.plan,
+      validation: validationCommands.length === 0 ? "none" : validationCommands.join("; "),
     };
   }
   await writePatchAttempt(loaded.paths, initialPatch);
@@ -409,7 +510,14 @@ export async function fixCommand(
     patchAttempt: patchAttemptId,
     status: patch.status,
     filesChanged: filesChanged.length,
+    changedFiles: filesChanged.length === 0 ? "none" : filesChanged.join(", "),
     commands: commandsRun.length,
+    validation:
+      commandsRun.length === 0
+        ? "none"
+        : commandsRun
+            .map((result) => `${result.command} => ${result.exitCode ?? "unknown"}`)
+            .join("; "),
     next: failed
       ? `inspect ${patchAttemptId}`
       : `clawpatch revalidate --finding ${finding.findingId}`,
@@ -546,6 +654,28 @@ function selectFeatures(
   return selected.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 1);
 }
 
+function reviewJobs(flags: Record<string, string | boolean>): number {
+  const parsed = Number(stringFlag(flags, "jobs") ?? "10");
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 1;
+  }
+  return Math.min(Math.floor(parsed), 32);
+}
+
+function emitReviewProgress(
+  context: AppContext,
+  event: string,
+  fields: Record<string, string | number | boolean>,
+): void {
+  if (context.options.quiet) {
+    return;
+  }
+  const values = Object.entries(fields)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  process.stderr.write(`clawpatch review ${event}${values.length > 0 ? ` ${values}` : ""}\n`);
+}
+
 function lockFeature(feature: FeatureRecord, currentRunId: string): FeatureRecord {
   if (feature.lock !== null) {
     throw new ClawpatchError(`feature locked: ${feature.featureId}`, 7, "lock-conflict");
@@ -583,6 +713,7 @@ function findingFromOutput(
     category: finding.category,
     severity: finding.severity,
     confidence: finding.confidence,
+    triage: deriveFindingTriage(finding.category, finding.confidence),
     evidence: finding.evidence,
     reasoning: finding.reasoning,
     reproduction: finding.reproduction,
@@ -624,26 +755,126 @@ async function writeMarkdownReport(
   reportDir: string,
   id: string,
   findings: FindingRecord[],
+  features: FeatureRecord[] = [],
 ): Promise<string> {
   const path = join(reportDir, `${id}.md`);
-  await writeFile(path, renderReport(findings), "utf8");
+  await writeFile(path, renderReport(findings, features), "utf8");
   return path;
 }
 
-function renderReport(findings: FindingRecord[]): string {
+function renderReport(findings: FindingRecord[], features: FeatureRecord[] = []): string {
   const lines = ["# clawpatch report", "", `findings: ${findings.length}`, ""];
+  const featureById = new Map(features.map((feature) => [feature.featureId, feature]));
   for (const finding of findings) {
     lines.push(`## ${finding.severity}: ${finding.title}`);
     lines.push("");
+    lines.push(`id: ${finding.findingId}`);
     lines.push(`category: ${finding.category}`);
     lines.push(`confidence: ${finding.confidence}`);
+    lines.push(`triage: ${finding.triage}`);
     lines.push(`status: ${finding.status}`);
-    lines.push(`feature: ${finding.featureId}`);
+    lines.push(`feature: ${featureLabel(finding.featureId, featureById.get(finding.featureId))}`);
+    if (finding.evidence.length > 0) {
+      lines.push("");
+      lines.push("evidence:");
+      for (const evidence of finding.evidence) {
+        lines.push(`- ${evidenceLabel(evidence)}`);
+      }
+    }
     lines.push("");
     lines.push(finding.reasoning);
+    if (finding.recommendation.length > 0) {
+      lines.push("");
+      lines.push("recommendation:");
+      lines.push(finding.recommendation);
+    }
+    if (finding.reproduction !== null && finding.reproduction.length > 0) {
+      lines.push("");
+      lines.push("repro:");
+      lines.push(finding.reproduction);
+    }
     lines.push("");
   }
   return `${lines.join("\n")}\n`;
+}
+
+function filterFindings(
+  findings: FindingRecord[],
+  flags: Record<string, string | boolean>,
+): FindingRecord[] {
+  const status = stringFlag(flags, "status");
+  const severity = stringFlag(flags, "severity");
+  const feature = stringFlag(flags, "feature");
+  const category = stringFlag(flags, "category");
+  const triage = stringFlag(flags, "triage");
+  return findings.filter(
+    (finding) =>
+      (status === undefined || finding.status === status) &&
+      (severity === undefined || finding.severity === severity) &&
+      (feature === undefined || finding.featureId === feature) &&
+      (category === undefined || finding.category === category) &&
+      (triage === undefined || finding.triage === triage),
+  );
+}
+
+function findingSummaries(
+  findings: FindingRecord[],
+  features: FeatureRecord[],
+): Array<{
+  id: string;
+  title: string;
+  severity: FindingRecord["severity"];
+  category: FindingRecord["category"];
+  confidence: FindingRecord["confidence"];
+  triage: FindingRecord["triage"];
+  status: FindingRecord["status"];
+  feature: { id: string; title: string | null };
+  evidence: Array<{
+    path: string;
+    startLine: number | null;
+    endLine: number | null;
+    symbol: string | null;
+  }>;
+  recommendation: string;
+  reproduction: string | null;
+}> {
+  const featureById = new Map(features.map((feature) => [feature.featureId, feature]));
+  return findings.map((finding) => ({
+    id: finding.findingId,
+    title: finding.title,
+    severity: finding.severity,
+    category: finding.category,
+    confidence: finding.confidence,
+    triage: finding.triage,
+    status: finding.status,
+    feature: {
+      id: finding.featureId,
+      title: featureById.get(finding.featureId)?.title ?? null,
+    },
+    evidence: finding.evidence.map((evidence) => ({
+      path: evidence.path,
+      startLine: evidence.startLine,
+      endLine: evidence.endLine,
+      symbol: evidence.symbol,
+    })),
+    recommendation: finding.recommendation,
+    reproduction: finding.reproduction,
+  }));
+}
+
+function evidenceLabel(evidence: FindingRecord["evidence"][number]): string {
+  const line =
+    evidence.startLine === null
+      ? ""
+      : evidence.endLine !== null && evidence.endLine !== evidence.startLine
+        ? `:${evidence.startLine}-${evidence.endLine}`
+        : `:${evidence.startLine}`;
+  const symbol = evidence.symbol === null ? "" : ` (${evidence.symbol})`;
+  return `${evidence.path}${line}${symbol}`;
+}
+
+function featureLabel(featureId: string, feature: FeatureRecord | undefined): string {
+  return feature === undefined ? featureId : `${feature.title} (${featureId})`;
 }
 
 function stringFlag(flags: Record<string, string | boolean>, name: string): string | undefined {

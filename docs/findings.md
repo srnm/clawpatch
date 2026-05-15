@@ -9,6 +9,7 @@ Each finding records:
 - category
 - severity
 - confidence
+- triage
 - evidence
 - reasoning
 - reproduction notes
@@ -31,6 +32,8 @@ clawpatch status
 clawpatch report
 clawpatch report -o report.md
 clawpatch report --json
+clawpatch report --status open --severity high
+clawpatch report --feature <featureId>
 ```
 
 Current ways to act on a finding:
@@ -40,4 +43,4 @@ clawpatch fix --finding <findingId>
 clawpatch revalidate --finding <findingId>
 ```
 
-There is no `triage` command or status-filtered report command yet.
+There is no interactive `triage` command yet.

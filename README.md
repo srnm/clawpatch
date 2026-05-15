@@ -29,7 +29,7 @@ pnpm link --global
 ```bash
 clawpatch init
 clawpatch map
-clawpatch review --limit 3
+clawpatch review --limit 3 --jobs 3
 clawpatch report
 clawpatch fix --finding <id>
 clawpatch revalidate --finding <id>
@@ -44,8 +44,8 @@ validation commands and records a patch attempt under `.clawpatch/`.
 - selected package scripts: `start`, `build`, `test`, `lint`, `typecheck`,
   `format`
 - Next.js `app/` and `pages/` routes
-- Go `cmd/*/main.go` commands
-- Go `internal/*` package slices
+- Go package slices from `go list ./...`, including command packages
+- Go package tests and same-repo imports as review context
 - Rust `src/main.rs`, `src/bin/*.rs`, `src/lib.rs`, `crates/*`, and
   `tests/*.rs`
 - SwiftPM `Sources/*` targets and `Tests/*` suites
@@ -94,8 +94,11 @@ Useful flags:
 - `--json`
 - `--plain`
 - `--limit <n>`
+- `--jobs <n>`
 - `--feature <id>`
 - `--finding <id>`
+- `--status <status>`
+- `--severity <severity>`
 - `--provider <name>`
 - `--model <name>`
 - `--output <path>` / `-o <path>`

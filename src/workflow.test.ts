@@ -26,10 +26,46 @@ import {
 } from "./state.js";
 import { buildReviewPrompt } from "./prompt.js";
 import { fixtureRoot, testOptions, writeFixture } from "./test-helpers.js";
+import { findingRecordSchema } from "./types.js";
 
 describe("workflow", () => {
   it("rejects unknown long flags", () => {
     expect(() => parseArgs(["fix", "--finding", "f", "--dryrun"])).toThrow("unknown arg");
+  });
+
+  it("parses review jobs and report filters", () => {
+    expect(parseArgs(["review", "--limit", "4", "--jobs", "3"]).flags).toMatchObject({
+      limit: "4",
+      jobs: "3",
+    });
+    expect(parseArgs(["report", "--status", "open", "--severity", "high"]).flags).toMatchObject({
+      status: "open",
+      severity: "high",
+    });
+  });
+
+  it("derives triage for legacy findings without triage fields", () => {
+    const parsed = findingRecordSchema.parse({
+      schemaVersion: 1,
+      findingId: "fnd_legacy",
+      featureId: "feat_legacy",
+      title: "Missing test",
+      category: "test-gap",
+      severity: "medium",
+      confidence: "high",
+      evidence: [],
+      reasoning: "legacy",
+      reproduction: null,
+      recommendation: "Add a test.",
+      status: "open",
+      signature: "sig_legacy",
+      linkedPatchAttemptIds: [],
+      createdByRunId: "run",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(parsed.triage).toBe("test-gap");
   });
 
   it("rejects nonexistent explicit roots before init", async () => {
@@ -61,13 +97,60 @@ describe("workflow", () => {
     await initCommand(context, {});
     const mapped = await mapCommand(context);
     const reviewed = await reviewCommand(context, { limit: "1" });
+    const paths = statePaths(join(root, ".clawpatch"));
+    const finding = (await readFindings(paths))[0];
+    expect(finding).toBeDefined();
+    await writeFinding(paths, {
+      ...finding!,
+      evidence: [{ ...finding!.evidence[0]!, startLine: 1, endLine: 1 }],
+    });
     const status = await statusCommand(context);
     const report = await reportCommand(context, {});
+    const jsonReport = await reportCommand(
+      { ...context, options: { ...context.options, json: true } },
+      { status: "open", severity: "medium" },
+    );
 
     expect(mapped).toMatchObject({ new: expect.any(Number) });
-    expect(reviewed).toMatchObject({ findings: 1 });
+    expect(reviewed).toMatchObject({ findings: 1, jobs: 1 });
     expect(status).toMatchObject({ openFindings: 1 });
     expect(report).toMatchObject({ findings: 1 });
+    expect(report).toMatchObject({ markdown: expect.stringContaining("src/index.ts:1") });
+    expect(jsonReport).toMatchObject({
+      findings: 1,
+      items: [
+        {
+          id: expect.stringMatching(/^fnd_/u),
+          severity: "medium",
+          status: "open",
+          evidence: [{ path: "src/index.ts", startLine: 1 }],
+        },
+      ],
+    });
+    delete process.env["CLAWPATCH_PROVIDER"];
+  });
+
+  it("reviews features concurrently without corrupting findings or locks", async () => {
+    const root = await fixtureRoot("clawpatch-parallel-review-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "parallel", bin: { one: "src/one.ts", two: "src/two.ts" } }),
+    );
+    await writeFixture(root, "src/one.ts", "export const one = 'TODO_BUG';\n");
+    await writeFixture(root, "src/two.ts", "export const two = 'TODO_BUG';\n");
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    await mapCommand(context);
+    const reviewed = await reviewCommand(context, { limit: "2", jobs: "2" });
+    const paths = statePaths(join(root, ".clawpatch"));
+    const [features, findings] = await Promise.all([readFeatures(paths), readFindings(paths)]);
+
+    expect(reviewed).toMatchObject({ reviewed: 2, findings: 2, jobs: 2 });
+    expect(findings).toHaveLength(2);
+    expect(features.every((feature) => feature.lock === null)).toBe(true);
     delete process.env["CLAWPATCH_PROVIDER"];
   });
 

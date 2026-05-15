@@ -45,12 +45,17 @@ export async function mapFeatures(
       seed.command ?? seed.route ?? seed.symbol ?? "",
     ]);
     const previous = existingById.get(featureId);
-    const tests = await nearbyTests(
+    const discoveredTests = await nearbyTests(
       root,
       seed.entryPath,
       seed.testCommand ?? project.detected.commands.test,
       seed.testPrefixes ?? [],
     );
+    const tests = uniqueTests([...(seed.tests ?? []), ...discoveredTests]);
+    const contextFiles = uniqueFileRefs([
+      ...(seed.contextFiles ?? []),
+      ...tests.map((test) => ({ path: test.path, reason: "nearby test" })),
+    ]);
     const feature: FeatureRecord = {
       schemaVersion: 1,
       featureId,
@@ -67,8 +72,8 @@ export async function mapFeatures(
           command: seed.command,
         },
       ],
-      ownedFiles: [{ path: seed.entryPath, reason: "entrypoint" }],
-      contextFiles: tests.map((test) => ({ path: test.path, reason: "nearby test" })),
+      ownedFiles: seed.ownedFiles ?? [{ path: seed.entryPath, reason: "entrypoint" }],
+      contextFiles,
       tests,
       tags: seed.tags,
       trustBoundaries: seed.trustBoundaries,
@@ -103,6 +108,38 @@ export async function mapFeatures(
       (feature) => !features.some((mapped) => mapped.featureId === feature.featureId),
     ).length,
   };
+}
+
+function uniqueFileRefs(refs: Array<{ path: string; reason: string }>): Array<{
+  path: string;
+  reason: string;
+}> {
+  const seen = new Set<string>();
+  const output: Array<{ path: string; reason: string }> = [];
+  for (const ref of refs) {
+    if (seen.has(ref.path)) {
+      continue;
+    }
+    seen.add(ref.path);
+    output.push(ref);
+  }
+  return output;
+}
+
+function uniqueTests(tests: Array<{ path: string; command: string | null }>): Array<{
+  path: string;
+  command: string | null;
+}> {
+  const seen = new Set<string>();
+  const output: Array<{ path: string; command: string | null }> = [];
+  for (const test of tests) {
+    if (seen.has(test.path)) {
+      continue;
+    }
+    seen.add(test.path);
+    output.push(test);
+  }
+  return output;
 }
 
 async function collectSeeds(root: string): Promise<FeatureSeed[]> {

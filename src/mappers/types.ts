@@ -1,5 +1,15 @@
 import { FeatureRecord, TrustBoundary } from "../types.js";
 
+export type SeedFileRef = {
+  path: string;
+  reason: string;
+};
+
+export type SeedTestRef = {
+  path: string;
+  command: string | null;
+};
+
 export type FeatureSeed = {
   title: string;
   summary: string;
@@ -12,6 +22,9 @@ export type FeatureSeed = {
   command: string | null;
   tags: string[];
   trustBoundaries: TrustBoundary[];
+  ownedFiles?: SeedFileRef[];
+  contextFiles?: SeedFileRef[];
+  tests?: SeedTestRef[];
   testCommand?: string | null;
   testPrefixes?: string[];
 };

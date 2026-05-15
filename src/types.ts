@@ -13,6 +13,33 @@ export const findingCategories = [
   "maintainability",
 ] as const;
 
+export const findingTriages = [
+  "confirmed-bug",
+  "contract-mismatch",
+  "risk",
+  "test-gap",
+  "docs-gap",
+] as const;
+
+export function deriveFindingTriage(
+  category: (typeof findingCategories)[number],
+  confidence: "high" | "medium" | "low",
+): (typeof findingTriages)[number] {
+  if (category === "test-gap") {
+    return "test-gap";
+  }
+  if (category === "docs-gap") {
+    return "docs-gap";
+  }
+  if (category === "api-contract") {
+    return "contract-mismatch";
+  }
+  if (confidence === "high" && ["bug", "security", "data-loss", "concurrency"].includes(category)) {
+    return "confirmed-bug";
+  }
+  return "risk";
+}
+
 export const featureKinds = [
   "cli-command",
   "route",
@@ -179,25 +206,31 @@ export const evidenceRefSchema = z.object({
   quote: z.string().nullable(),
 });
 
-export const findingRecordSchema = z.object({
-  schemaVersion: z.literal(1),
-  findingId: z.string(),
-  featureId: z.string(),
-  title: z.string(),
-  category: z.enum(findingCategories),
-  severity: z.enum(["critical", "high", "medium", "low"]),
-  confidence: z.enum(["high", "medium", "low"]),
-  evidence: z.array(evidenceRefSchema),
-  reasoning: z.string(),
-  reproduction: z.string().nullable(),
-  recommendation: z.string(),
-  status: z.enum(["open", "false-positive", "fixed", "wont-fix", "uncertain"]),
-  signature: z.string(),
-  linkedPatchAttemptIds: z.array(z.string()),
-  createdByRunId: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+export const findingRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    findingId: z.string(),
+    featureId: z.string(),
+    title: z.string(),
+    category: z.enum(findingCategories),
+    severity: z.enum(["critical", "high", "medium", "low"]),
+    confidence: z.enum(["high", "medium", "low"]),
+    triage: z.enum(findingTriages).optional(),
+    evidence: z.array(evidenceRefSchema),
+    reasoning: z.string(),
+    reproduction: z.string().nullable(),
+    recommendation: z.string(),
+    status: z.enum(["open", "false-positive", "fixed", "wont-fix", "uncertain"]),
+    signature: z.string(),
+    linkedPatchAttemptIds: z.array(z.string()),
+    createdByRunId: z.string(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .transform((finding) => ({
+    ...finding,
+    triage: finding.triage ?? deriveFindingTriage(finding.category, finding.confidence),
+  }));
 
 export type FindingRecord = z.infer<typeof findingRecordSchema>;
 

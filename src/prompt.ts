@@ -37,6 +37,12 @@ Review categories:
 - release/build hazards
 - maintainability risks with concrete impact
 
+Inspect owned files, context files, and linked tests. Treat tests as evidence of intended
+behavior when they clearly pin a contract, and avoid reporting behavior as a bug solely
+because a helper name implies a broader contract. When a bug pattern appears in one
+owned file, check sibling owned files for the same pattern and include sibling evidence
+instead of filing a narrow one-off finding.
+
 Avoid speculative low-evidence findings. Evidence must point at included files.
 
 JSON shape:

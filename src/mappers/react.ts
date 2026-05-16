@@ -48,9 +48,6 @@ const defaultImportRe =
   /import\s+([A-Z][A-Za-z0-9_]*)(?:\s*,\s*\{[^}]*\})?\s+from\s+["']([^"']+)["']/gu;
 const namedImportRe = /import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']/gu;
 const anyImportRe = /from\s+["']([^"']+)["']/gu;
-const reactRouterRouteImportRe =
-  /import\s+\{[^}]*\bRoute\b[^}]*\}\s+from\s+["']react-router(?:-dom)?["']/u;
-
 const packageRootCandidates = ["", "frontend", "client", "web", "ui", "app", "apps", "packages"];
 const sourceRoots = ["src", "app"];
 const componentRoots = ["src/pages", "src/components"];
@@ -79,10 +76,11 @@ async function routeSeeds(root: string, info: ReactPackage): Promise<FeatureSeed
   for (const file of routeFiles) {
     const source = await readFile(join(root, file), "utf8");
     const parsedSource = stripJsxComments(source);
-    if (!reactRouterRouteImportRe.test(parsedSource)) {
+    const routeTagNames = reactRouterRouteTagNames(parsedSource);
+    if (routeTagNames.size === 0) {
       continue;
     }
-    const routes = routeMatches(parsedSource, file);
+    const routes = routeMatches(parsedSource, file, routeTagNames);
     if (routes.length === 0) {
       continue;
     }
@@ -501,9 +499,13 @@ async function packageTestFiles(root: string, info: ReactPackage): Promise<strin
     .slice(0, 200);
 }
 
-function routeMatches(source: string, declarationPath: string): RouteMatch[] {
+function routeMatches(
+  source: string,
+  declarationPath: string,
+  routeTagNames: ReadonlySet<string>,
+): RouteMatch[] {
   const routes: RouteMatch[] = [];
-  for (const route of routeDeclarations(source)) {
+  for (const route of routeDeclarations(source, routeTagNames)) {
     if (route.component === null) {
       continue;
     }
@@ -512,11 +514,12 @@ function routeMatches(source: string, declarationPath: string): RouteMatch[] {
   return routes;
 }
 
-function routeDeclarations(source: string): RouteDeclaration[] {
+function routeDeclarations(source: string, routeTagNames: ReadonlySet<string>): RouteDeclaration[] {
   const routes: RouteDeclaration[] = [];
   const pathStack: string[] = [];
   const strippedSource = stripJsxComments(source);
-  for (const match of strippedSource.matchAll(/<\/Route\s*>|<Route\b/gu)) {
+  const tagPattern = routeTagPattern(routeTagNames);
+  for (const match of strippedSource.matchAll(tagPattern)) {
     if (isInsideJsString(strippedSource, match.index)) {
       continue;
     }
@@ -524,7 +527,11 @@ function routeDeclarations(source: string): RouteDeclaration[] {
       pathStack.pop();
       continue;
     }
-    const tag = readRouteTag(strippedSource, match.index + "<Route".length);
+    const tagName = match[1] ?? match[2];
+    if (tagName === undefined) {
+      continue;
+    }
+    const tag = readRouteTag(strippedSource, match.index + 1 + tagName.length);
     if (tag === null) {
       continue;
     }
@@ -546,6 +553,30 @@ function routeDeclarations(source: string): RouteDeclaration[] {
     }
   }
   return routes;
+}
+
+function reactRouterRouteTagNames(source: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of source.matchAll(
+    /import\s+\{([^}]+)\}\s+from\s+["']react-router(?:-dom)?["']/gu,
+  )) {
+    const imports = match[1];
+    if (imports === undefined) {
+      continue;
+    }
+    for (const item of imports.split(",")) {
+      const importMatch = /^\s*Route(?:\s+as\s+([A-Z][A-Za-z0-9_]*))?\s*$/u.exec(item);
+      if (importMatch !== null) {
+        names.add(importMatch[1] ?? "Route");
+      }
+    }
+  }
+  return names;
+}
+
+function routeTagPattern(routeTagNames: ReadonlySet<string>): RegExp {
+  const names = [...routeTagNames].map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  return new RegExp(`</(${names.join("|")})\\s*>|<(${names.join("|")})\\b`, "gu");
 }
 
 function routeElementComponent(props: string): string | null {

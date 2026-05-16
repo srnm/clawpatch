@@ -273,7 +273,7 @@ function apiRouterPrefixes(source: string): Map<string, string> {
     }
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
-    const args = readPythonCallArgs(source, openParenIndex);
+    const args = stripLineComments(readPythonCallArgs(source, openParenIndex), "#");
     const prefix = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(args)?.[2];
     if (receiver !== undefined && prefix !== undefined) {
       prefixes.set(receiver, prefix);

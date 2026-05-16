@@ -1614,7 +1614,10 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       "backend/routes/health_routes.py",
       [
         "from fastapi import APIRouter",
-        "router = APIRouter()",
+        "router = APIRouter(",
+        '    # prefix="/stale",',
+        '    prefix="/v1",',
+        ")",
         '@router.get("/ready")',
         "def ready():",
         "    return {'ok': True}",
@@ -1652,7 +1655,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     );
 
     expect(titles).toContain("FastAPI route GET /health");
-    expect(titles).toContain("FastAPI route GET /ready");
+    expect(titles).toContain("FastAPI route GET /v1/ready");
     expect(titles).toContain("FastAPI route POST /api/v1/auth/login");
     expect(titles).toContain("FastAPI route GET /api/v2/cases/{case_id}");
     expect(caseRoute?.source).toBe("fastapi-route");
@@ -1803,7 +1806,10 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       [
         "from fastapi import APIRouter, FastAPI",
         "app = FastAPI()",
-        "router = APIRouter()",
+        "router = APIRouter(",
+        '    # prefix="/stale",',
+        '    prefix="/v1",',
+        ")",
         "example = '''",
         '@router.get("/fake")',
         "def fake():",
@@ -1824,9 +1830,10 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     const result = await mapFeatures(root, project, []);
     const titles = result.features.map((feature) => feature.title);
 
-    expect(titles).toContain("FastAPI route TRACE /api/trace");
+    expect(titles).toContain("FastAPI route TRACE /api/v1/trace");
     expect(titles).not.toContain("FastAPI route GET /api/fake");
-    expect(titles).not.toContain("FastAPI route TRACE /old/trace");
+    expect(titles).not.toContain("FastAPI route TRACE /api/stale/trace");
+    expect(titles).not.toContain("FastAPI route TRACE /old/v1/trace");
   });
 
   it("maps FastAPI include prefixes in src layouts and relative imports", async () => {

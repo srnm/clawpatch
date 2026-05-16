@@ -8,6 +8,7 @@ import {
   nodeScriptCommand,
   normalize,
   pathMatchesPrefix,
+  pathInsideRoot,
   shouldSkip,
   walk,
 } from "./shared.js";
@@ -64,7 +65,9 @@ export async function reactSeeds(root: string): Promise<FeatureSeed[]> {
 
 async function routeSeeds(root: string, info: ReactPackage): Promise<FeatureSeed[]> {
   const files = await packageSourceFiles(root, info, sourceRoots);
-  const routeFiles = files.filter((file) => /\.(tsx|jsx|ts|js)$/u.test(file));
+  const routeFiles = files
+    .filter((file) => /\.(tsx|jsx|ts|js)$/u.test(file))
+    .filter((file) => !isJsTestPath(file));
   const testCommand = packageTestCommand(info);
   const tests = await packageTestFiles(root, info);
   const seeds: FeatureSeed[] = [];
@@ -419,7 +422,8 @@ function resolveImport(root: string, fromPath: string, importPath: string): stri
     join(base, "index.js"),
   ];
   for (const candidate of candidates.map(normalize)) {
-    if (!shouldSkip(candidate) && pathExistsSyncMemo(join(root, candidate))) {
+    const fullPath = join(root, candidate);
+    if (!shouldSkip(candidate) && pathInsideRoot(root, fullPath) && pathExistsSyncMemo(fullPath)) {
       return candidate;
     }
   }

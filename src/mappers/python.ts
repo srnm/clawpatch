@@ -153,6 +153,9 @@ async function fastApiRouteSeeds(
   for (const file of files) {
     sources.set(file, await readFile(join(root, file), "utf8"));
   }
+  if (!(await hasFastApiSignal(root, sources))) {
+    return [];
+  }
   const prefixes = routePrefixes(root, sources);
   const seeds: FeatureSeed[] = [];
   for (const [file, source] of sources) {
@@ -269,19 +272,26 @@ function routePrefixes(root: string, sources: Map<string, string>): Map<string, 
   const sourceFiles = new Set(sources.keys());
   const aliasesByFile = new Map<string, Map<string, string>>();
   const includesByFile = new Map<string, ReturnType<typeof includeRouterCalls>>();
+  const routerPrefixesByFile = new Map<string, Map<string, string>>();
   for (const [file, source] of sources) {
     aliasesByFile.set(file, pythonImportAliases(file, source, sourceFiles));
     includesByFile.set(file, includeRouterCalls(source));
+    routerPrefixesByFile.set(file, apiRouterPrefixes(source));
   }
   for (let pass = 0; pass < sources.size + 1; pass += 1) {
     let changed = false;
     for (const [file, includes] of includesByFile) {
       const aliases = aliasesByFile.get(file) ?? new Map<string, string>();
+      const localRouterPrefixes = routerPrefixesByFile.get(file) ?? new Map<string, string>();
       for (const include of includes) {
+        const receiverRouterPrefix = localRouterPrefixes.get(include.receiver) ?? "";
         const parentPrefix =
           include.receiver === "app"
             ? ""
-            : (exportedRouterPrefixes.get(include.receiver) ?? prefixes.get(file) ?? "");
+            : joinRoutePaths(
+                exportedRouterPrefixes.get(include.receiver) ?? prefixes.get(file) ?? "",
+                receiverRouterPrefix,
+              );
         const fullPrefix = joinRoutePaths(parentPrefix, include.prefix);
         if (!include.target.includes(".")) {
           changed = setMapValue(exportedRouterPrefixes, include.target, fullPrefix) || changed;
@@ -389,8 +399,32 @@ function addPythonImportAliases(
         ? resolvePythonModuleFile(currentFile, moduleName, sourceFiles)
         : (resolvePythonModuleFile(currentFile, nestedModuleName, sourceFiles) ??
           resolvePythonModuleFile(currentFile, moduleName, sourceFiles));
-    aliases.set(alias, importedFile ?? currentFile);
+    if (importedFile !== null) {
+      aliases.set(alias, importedFile);
+    }
   }
+}
+
+async function hasFastApiSignal(
+  root: string,
+  sources: ReadonlyMap<string, string>,
+): Promise<boolean> {
+  if (await pythonDependencyHas(root, "fastapi")) {
+    return true;
+  }
+  return [...sources.values()].some((source) =>
+    /(?:^|\n)\s*(?:from\s+fastapi\s+import\b|import\s+fastapi\b)/u.test(source),
+  );
+}
+
+async function pythonDependencyHas(root: string, dependency: string): Promise<boolean> {
+  if (await pathExists(join(root, "pyproject.toml"))) {
+    const source = await readFile(join(root, "pyproject.toml"), "utf8");
+    if (dependencyNames(source).has(dependency)) {
+      return true;
+    }
+  }
+  return dependencyFileHas(root, dependency);
 }
 
 function appendPythonModuleName(moduleName: string, importedName: string): string {

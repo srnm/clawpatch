@@ -405,6 +405,7 @@ describe("mapFeatures", () => {
         "import ReportsPage from './pages/ReportsPage';",
         "import SettingsPage from './pages/SettingsPage';",
         "import UserPage from './pages/UserPage';",
+        "import EscapePage from '../../../outside';",
         "export default function App() {",
         "  return <Routes>",
         "    <Route index element={<HomePage />} />",
@@ -415,8 +416,25 @@ describe("mapFeatures", () => {
         "    </Route>",
         '    <Route element={<ReportsPage />} path="/reports" />',
         '    <Route path="/settings" element={<SettingsPage />} />',
+        '    <Route path="/escape" element={<EscapePage />} />',
         "  </Routes>;",
         "}",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "../outside.tsx",
+      "export default function EscapePage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "frontend/src/App.test.tsx",
+      [
+        "import { MemoryRouter, Route, Routes } from 'react-router-dom';",
+        "function TestOnlyPage() { return null; }",
+        "test('fixture route', () => <MemoryRouter><Routes>",
+        '  <Route path="/test-only" element={<TestOnlyPage />} />',
+        "</Routes></MemoryRouter>);",
       ].join("\n"),
     );
     await writeFixture(
@@ -464,6 +482,7 @@ describe("mapFeatures", () => {
     const reports = result.features.find((feature) => feature.title === "React route /reports");
     const settings = result.features.find((feature) => feature.title === "React route /settings");
     const user = result.features.find((feature) => feature.title === "React route /users/:id");
+    const escape = result.features.find((feature) => feature.title === "React route /escape");
     const dialog = result.features.find((feature) => feature.title === "React component Dialog");
 
     expect(titles).toContain("Node package fixture-frontend");
@@ -483,6 +502,8 @@ describe("mapFeatures", () => {
     expect(reports?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
+    expect(escape?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
+    expect(titles).not.toContain("React route /test-only");
     expect(dialog?.source).toBe("react-component");
     expect(dialog?.ownedFiles).toEqual([
       { path: "frontend/src/components/Dialog.tsx", reason: "component implementation" },
@@ -1221,7 +1242,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       [
         "from fastapi import APIRouter",
         "from .routes.users import router as users_router",
-        "router = APIRouter()",
+        'router = APIRouter(prefix="/api")',
         'router.include_router(users_router, prefix="/users")',
       ].join("\n"),
     );
@@ -1277,7 +1298,59 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).toContain("FastAPI route GET /api/users/login");
     expect(titles).toContain("FastAPI route GET /ready");
     expect(titles).toContain("FastAPI route GET /v1/status");
-    expect(titles).toContain("FastAPI route GET /nested/users/{user_id}");
+    expect(titles).toContain("FastAPI route GET /nested/api/users/{user_id}");
+  });
+
+  it("does not map Flask decorators as FastAPI routes", async () => {
+    const root = await fixtureRoot("clawpatch-flask-not-fastapi-");
+    await writeFixture(root, "requirements.txt", "flask\n");
+    await writeFixture(
+      root,
+      "app.py",
+      [
+        "from flask import Flask",
+        "app = Flask(__name__)",
+        '@app.get("/health")',
+        "def health():",
+        "    return {'ok': True}",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).not.toContain(
+      "FastAPI route GET /health",
+    );
+  });
+
+  it("ignores unresolved FastAPI router imports when assigning prefixes", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-unresolved-router-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(
+      root,
+      "main.py",
+      [
+        "from fastapi import FastAPI",
+        "from shared import router",
+        "app = FastAPI()",
+        'app.include_router(router, prefix="/shared")',
+        '@app.get("/health")',
+        "def health():",
+        "    return {'ok': True}",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /health");
+    expect(titles).not.toContain("FastAPI route GET /shared/health");
   });
 
   it("resolves Python console scripts and tests from non-src package roots", async () => {

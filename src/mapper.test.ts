@@ -667,6 +667,49 @@ describe("mapFeatures", () => {
     expect(result.features.map((feature) => feature.title)).not.toContain("React route /custom");
   });
 
+  it("unwraps React Router fragment and member-expression route wrappers", async () => {
+    const root = await fixtureRoot("clawpatch-react-route-wrappers-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "src/App.tsx",
+      [
+        "import React from 'react';",
+        "import { Route, Routes } from 'react-router-dom';",
+        "import FragmentPage from './pages/FragmentPage';",
+        "import SuspensePage from './pages/SuspensePage';",
+        "export function App() {",
+        "  return <Routes>",
+        '    <Route path="/fragment" element={<><FragmentPage /></>} />',
+        '    <Route path="/member" element={<React.Suspense><SuspensePage /></React.Suspense>} />',
+        "  </Routes>;",
+        "}",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "src/pages/FragmentPage.tsx",
+      "export default function FragmentPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "src/pages/SuspensePage.tsx",
+      "export default function SuspensePage() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const fragment = result.features.find((feature) => feature.title === "React route /fragment");
+    const member = result.features.find((feature) => feature.title === "React route /member");
+
+    expect(fragment?.entrypoints[0]?.path).toBe("src/pages/FragmentPage.tsx");
+    expect(member?.entrypoints[0]?.path).toBe("src/pages/SuspensePage.tsx");
+  });
+
   it("does not discover React packages through symlinked package roots", async () => {
     const root = await fixtureRoot("clawpatch-react-symlink-package-");
     const outside = join(root, "../outside-react-package");

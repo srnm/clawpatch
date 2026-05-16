@@ -680,8 +680,12 @@ function readJsxOpeningTag(
   if (openIndex === -1 || source[openIndex + 1] === "/") {
     return null;
   }
-  const nameMatch = /^<([A-Z][A-Za-z0-9_]*)(?=[\s/>])/u.exec(source.slice(openIndex));
-  const name = nameMatch?.[1];
+  const name =
+    source[openIndex + 1] === ">"
+      ? "Fragment"
+      : /^<([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*)(?=[\s/>])/u.exec(
+          source.slice(openIndex),
+        )?.[1];
   if (name === undefined) {
     return null;
   }
@@ -718,9 +722,15 @@ function readJsxOpeningTag(
 }
 
 function isRouteWrapperComponent(name: string): boolean {
-  return new Set(["Suspense", "RequireAuth", "ProtectedRoute", "PrivateRoute", "AuthGuard"]).has(
-    name,
-  );
+  const component = name.split(".").at(-1) ?? name;
+  return new Set([
+    "Fragment",
+    "Suspense",
+    "RequireAuth",
+    "ProtectedRoute",
+    "PrivateRoute",
+    "AuthGuard",
+  ]).has(component);
 }
 
 function stripJsxComments(source: string): string {

@@ -375,6 +375,7 @@ describe("mapFeatures", () => {
 
   it("maps React Router routes and components in a nested frontend app", async () => {
     const root = await fixtureRoot("clawpatch-react-router-map-");
+    await writeFixture(root, "pnpm-workspace.yaml", "packages:\n  - frontend\n");
     await writeFixture(
       root,
       "frontend/package.json",
@@ -449,7 +450,7 @@ describe("mapFeatures", () => {
     expect(cases?.tests).toEqual([
       {
         path: "frontend/src/pages/CasesPage.test.tsx",
-        command: "npm --prefix frontend run test",
+        command: "pnpm --dir frontend test",
       },
     ]);
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");

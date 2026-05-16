@@ -3,8 +3,10 @@ import { basename, dirname, extname, join } from "node:path";
 import { packageBins, packageScripts, readPackageJson } from "../detect.js";
 import { pathExists } from "../fs.js";
 import {
+  detectNodePackageManager,
   normalize,
   isSafeDirectory,
+  nodeScriptCommand,
   packageKind,
   packageTrustBoundaries,
   pathMatchesPrefix,
@@ -100,7 +102,7 @@ async function packageSeeds(
       tags: ["node", "cli"],
       trustBoundaries: ["user-input", "filesystem", "process-exec"],
       ...(packageScripts(info.packageJson)["test"]
-        ? { testCommand: scriptCommand(packageManager, info.root, "test") }
+        ? { testCommand: nodeScriptCommand(packageManager, info.root, "test") }
         : {}),
     });
   }
@@ -141,7 +143,7 @@ async function sourceGroupSeeds(
 ): Promise<FeatureSeed[]> {
   const packageName = packageDisplayName(info);
   const testCommand = packageScripts(info.packageJson)["test"]
-    ? scriptCommand(packageManager, info.root, "test")
+    ? nodeScriptCommand(packageManager, info.root, "test")
     : null;
   const testFiles = await packageTestFiles(root, info);
   const seeds: FeatureSeed[] = [];
@@ -691,38 +693,6 @@ function packageDisplayName(info: PackageInfo): string {
     return info.packageJson.name;
   }
   return info.root === "." ? basename(dirname(join(info.packageJsonPath))) : basename(info.root);
-}
-
-async function detectNodePackageManager(root: string): Promise<string> {
-  if (
-    (await pathExists(join(root, "pnpm-lock.yaml"))) ||
-    (await pathExists(join(root, "pnpm-workspace.yaml")))
-  ) {
-    return "pnpm";
-  }
-  if (await pathExists(join(root, "yarn.lock"))) {
-    return "yarn";
-  }
-  if (await pathExists(join(root, "bun.lockb"))) {
-    return "bun";
-  }
-  return "npm";
-}
-
-function scriptCommand(packageManager: string, packageRoot: string, script: string): string {
-  if (packageRoot === ".") {
-    return packageManager === "npm" ? `npm run ${script}` : `${packageManager} ${script}`;
-  }
-  if (packageManager === "pnpm") {
-    return `pnpm --dir ${packageRoot} ${script}`;
-  }
-  if (packageManager === "yarn") {
-    return `yarn --cwd ${packageRoot} ${script}`;
-  }
-  if (packageManager === "bun") {
-    return `bun --cwd ${packageRoot} run ${script}`;
-  }
-  return `npm --prefix ${packageRoot} run ${script}`;
 }
 
 function isReviewableNodeSourceFile(path: string): boolean {

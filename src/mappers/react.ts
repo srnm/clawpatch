@@ -2,7 +2,15 @@ import { readFileSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pathExists } from "../fs.js";
-import { isSampleProjectPath, normalize, pathMatchesPrefix, shouldSkip, walk } from "./shared.js";
+import {
+  detectNodePackageManager,
+  isSampleProjectPath,
+  nodeScriptCommand,
+  normalize,
+  pathMatchesPrefix,
+  shouldSkip,
+  walk,
+} from "./shared.js";
 import { FeatureSeed, SeedFileRef, SeedTestRef } from "./types.js";
 
 type PackageJson = {
@@ -16,6 +24,7 @@ type ReactPackage = {
   root: string;
   packageJsonPath: string;
   packageJson: PackageJson;
+  packageManager: string;
 };
 
 type RouteMatch = {
@@ -150,6 +159,7 @@ async function componentSeeds(
 
 async function discoverReactPackages(root: string): Promise<ReactPackage[]> {
   const packages: ReactPackage[] = [];
+  const packageManager = await detectNodePackageManager(root);
   for (const packageJsonPath of await packageJsonPaths(root)) {
     const packageJson = await readPackageJsonAt(root, packageJsonPath);
     if (packageJson === null || !hasReactDependency(packageJson)) {
@@ -159,6 +169,7 @@ async function discoverReactPackages(root: string): Promise<ReactPackage[]> {
       root: dirname(packageJsonPath) === "." ? "." : dirname(packageJsonPath),
       packageJsonPath,
       packageJson,
+      packageManager,
     });
   }
   return packages;
@@ -364,7 +375,7 @@ function packageTestCommand(info: ReactPackage): string | null {
   if (!packageScripts(info.packageJson).has("test")) {
     return null;
   }
-  return info.root === "." ? "npm run test" : `npm --prefix ${info.root} run test`;
+  return nodeScriptCommand(info.packageManager, info.root, "test");
 }
 
 function packageScripts(pkg: PackageJson): Set<string> {

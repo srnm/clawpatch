@@ -7,6 +7,7 @@ import { gradleSeeds } from "./mappers/gradle.js";
 import { nextSeeds } from "./mappers/next.js";
 import { nodeSeeds } from "./mappers/node.js";
 import { pythonSeeds } from "./mappers/python.js";
+import { reactSeeds } from "./mappers/react.js";
 import { discoverNodeProjects } from "./mappers/projects.js";
 import { rubySeeds } from "./mappers/ruby.js";
 import { rustSeeds } from "./mappers/rust.js";
@@ -25,6 +26,7 @@ export type MapResult = {
 const featureMappers: FeatureMapper[] = [
   { name: "node", map: nodeSeeds },
   { name: "next", map: nextSeeds },
+  { name: "react", map: reactSeeds },
   { name: "go", map: goSeeds },
   { name: "python", map: pythonSeeds },
   { name: "ruby", map: rubySeeds },

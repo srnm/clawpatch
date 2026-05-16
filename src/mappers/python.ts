@@ -8,6 +8,7 @@ import {
   packageTrustBoundaries,
   pathMatchesPrefix,
   shouldSkip,
+  stripLineComments,
   walk,
 } from "./shared.js";
 import { FeatureSeed, SeedFileRef, SeedTestRef } from "./types.js";
@@ -55,7 +56,16 @@ const projectMetadataFiles = [
 ] as const;
 const sourceGroupMaxOwnedFiles = 12;
 const sourceGroupMaxTests = 8;
-const fastApiMethods = ["get", "post", "put", "patch", "delete", "options", "head"] as const;
+const fastApiMethods = [
+  "get",
+  "post",
+  "put",
+  "patch",
+  "delete",
+  "options",
+  "head",
+  "trace",
+] as const;
 
 export async function pythonSeeds(root: string): Promise<FeatureSeed[]> {
   if (!(await isPythonProject(root))) {
@@ -473,7 +483,7 @@ function includeRouterCalls(
   for (const match of source.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\.include_router\(/gmu)) {
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
-    const args = readPythonCallArgs(source, openParenIndex);
+    const args = stripLineComments(readPythonCallArgs(source, openParenIndex), "#");
     const target = includeRouterTarget(args);
     const prefixMatch = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(args);
     if (receiver !== undefined && target !== undefined) {

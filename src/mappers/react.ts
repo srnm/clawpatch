@@ -77,14 +77,15 @@ async function routeSeeds(root: string, info: ReactPackage): Promise<FeatureSeed
 
   for (const file of routeFiles) {
     const source = await readFile(join(root, file), "utf8");
-    if (!reactRouterRouteImportRe.test(source)) {
+    const parsedSource = stripJsxComments(source);
+    if (!reactRouterRouteImportRe.test(parsedSource)) {
       continue;
     }
-    const routes = routeMatches(source, file);
+    const routes = routeMatches(parsedSource, file);
     if (routes.length === 0) {
       continue;
     }
-    const imports = componentImports(root, file, source);
+    const imports = componentImports(root, file, parsedSource);
     for (const route of routes) {
       if (isFrameworkRouteComponent(route.component)) {
         continue;

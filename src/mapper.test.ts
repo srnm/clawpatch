@@ -649,12 +649,13 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "package.json",
-      JSON.stringify({ dependencies: { react: "1.0.0" } }, null, 2),
+      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
     );
     await writeFixture(
       root,
       "src/App.tsx",
       [
+        "// import { Route } from 'react-router-dom';",
         "function Route(_props: { path: string }) { return null; }",
         "function Page() { return null; }",
         'export function App() { return <Route path="/custom"><Page /></Route>; }',
@@ -682,6 +683,7 @@ describe("mapFeatures", () => {
         "import { Route, Routes } from 'react-router-dom';",
         "import FragmentPage from './pages/FragmentPage';",
         "import SuspensePage from './pages/SuspensePage';",
+        "// import FragmentPage from './pages/WrongPage';",
         "export function App() {",
         "  return <Routes>",
         '    <Route path="/fragment" element={<><FragmentPage /></>} />',
@@ -699,6 +701,11 @@ describe("mapFeatures", () => {
       root,
       "src/pages/SuspensePage.tsx",
       "export default function SuspensePage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "src/pages/WrongPage.tsx",
+      "export default function WrongPage() { return null; }\n",
     );
 
     const project = await detectProject(root);
@@ -1779,6 +1786,39 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(result.features.map((feature) => feature.title)).not.toContain(
       "FastAPI route GET /api/stale/items",
     );
+  });
+
+  it("ignores commented FastAPI include prefixes and maps TRACE routes", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-commented-prefix-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(
+      root,
+      "main.py",
+      [
+        "from fastapi import APIRouter, FastAPI",
+        "app = FastAPI()",
+        "router = APIRouter()",
+        "app.include_router(",
+        "    router,",
+        '    # prefix="/old",',
+        '    prefix="/api",',
+        ")",
+        '@router.trace("/trace")',
+        "def trace():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route TRACE /api/trace");
+    expect(titles).not.toContain("FastAPI route TRACE /old/trace");
   });
 
   it("maps FastAPI include prefixes in src layouts and relative imports", async () => {

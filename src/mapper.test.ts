@@ -406,6 +406,7 @@ describe("mapFeatures", () => {
         "import SettingsPage from './pages/SettingsPage';",
         "import SuspensePage from './pages/SuspensePage';",
         "import UserPage from './pages/UserPage';",
+        "import LinkedPage from './pages/LinkedPage';",
         "import EscapePage from '../../../outside';",
         "export default function App() {",
         "  return <Routes>",
@@ -420,8 +421,9 @@ describe("mapFeatures", () => {
         '    <Route path="/suspense" element={<Suspense><SuspensePage /></Suspense>} />',
         '    <Route element={<ReportsPage />} path="/reports" />',
         '    <Route path="/settings" element={<SettingsPage />} />',
+        '    <Route path="/linked" element={<LinkedPage />} />',
         '    <Route path="/escape" element={<EscapePage />} />',
-        "  </Routes>;",
+        '  </Routes>; // <Route path="/trailing-old" element={<OldPage />} />',
         "}",
       ].join("\n"),
     );
@@ -479,6 +481,15 @@ describe("mapFeatures", () => {
     );
     await writeFixture(
       root,
+      "../outside-linked.tsx",
+      "export default function LinkedPage() { return null; }\n",
+    );
+    await symlink(
+      join(root, "../outside-linked.tsx"),
+      join(root, "frontend/src/pages/LinkedPage.tsx"),
+    );
+    await writeFixture(
+      root,
       "frontend/src/components/Dialog.tsx",
       "export default function Dialog() { return null; }\n",
     );
@@ -492,6 +503,7 @@ describe("mapFeatures", () => {
     const settings = result.features.find((feature) => feature.title === "React route /settings");
     const suspense = result.features.find((feature) => feature.title === "React route /suspense");
     const user = result.features.find((feature) => feature.title === "React route /users/:id");
+    const linked = result.features.find((feature) => feature.title === "React route /linked");
     const escape = result.features.find((feature) => feature.title === "React route /escape");
     const dialog = result.features.find((feature) => feature.title === "React component Dialog");
 
@@ -513,9 +525,11 @@ describe("mapFeatures", () => {
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
     expect(suspense?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
+    expect(linked?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
     expect(escape?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
     expect(titles).not.toContain("React route /old");
     expect(titles).not.toContain("React route /line-old");
+    expect(titles).not.toContain("React route /trailing-old");
     expect(titles).not.toContain("React route /test-only");
     expect(dialog?.source).toBe("react-component");
     expect(dialog?.ownedFiles).toEqual([
@@ -1306,8 +1320,12 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
         "app = FastAPI()",
         'router: fastapi.APIRouter = fastapi.APIRouter(dependencies=[Depends(auth)], prefix="/v1")',
         'app.include_router(router, prefix="/api")',
+        '# app.include_router(router, prefix="/disabled")',
         '@router.get("/items")',
         "def items():",
+        "    return []",
+        '@router.post(path="/keyword")',
+        "def keyword():",
         "    return []",
       ].join("\n"),
     );
@@ -1317,6 +1335,12 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
 
     expect(result.features.map((feature) => feature.title)).toContain(
       "FastAPI route GET /api/v1/items",
+    );
+    expect(result.features.map((feature) => feature.title)).toContain(
+      "FastAPI route POST /api/v1/keyword",
+    );
+    expect(result.features.map((feature) => feature.title)).not.toContain(
+      "FastAPI route GET /disabled/v1/items",
     );
   });
 

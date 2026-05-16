@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { pathExists } from "../fs.js";
@@ -380,10 +380,36 @@ function routeDeclarations(source: string): RouteDeclaration[] {
 function stripJsxComments(source: string): string {
   return source
     .split("\n")
-    .map((line) => (/^\s*\/\//u.test(line) ? "" : line))
+    .map(stripLineComment)
     .join("\n")
     .replace(/\{\/\*[\s\S]*?\*\/\}/gu, "")
     .replace(/\/\*[\s\S]*?\*\//gu, "");
+}
+
+function stripLineComment(line: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const char = line[index];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "/" && line[index + 1] === "/") {
+      return line.slice(0, index);
+    }
+  }
+  return line;
 }
 
 function readRouteTag(
@@ -532,11 +558,24 @@ function resolveImport(root: string, fromPath: string, importPath: string): stri
   ];
   for (const candidate of candidates.map(normalize)) {
     const fullPath = join(root, candidate);
-    if (!shouldSkip(candidate) && pathInsideRoot(root, fullPath) && pathExistsSyncMemo(fullPath)) {
+    if (
+      !shouldSkip(candidate) &&
+      pathInsideRoot(root, fullPath) &&
+      realPathInsideRoot(root, fullPath) &&
+      pathExistsSyncMemo(fullPath)
+    ) {
       return candidate;
     }
   }
   return null;
+}
+
+function realPathInsideRoot(root: string, path: string): boolean {
+  try {
+    return pathInsideRoot(realpathSync(root), realpathSync(path));
+  } catch {
+    return false;
+  }
 }
 
 function associatedTests(files: string[], tests: string[], command: string | null): SeedTestRef[] {

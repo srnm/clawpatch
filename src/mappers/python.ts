@@ -284,7 +284,7 @@ function fastApiDecorators(
     const method = match[2];
     const openParenIndex = match.index + match[0].length - 1;
     const args = readPythonCallArgs(source, openParenIndex);
-    const path = /^\s*(["'])([^"']*)\1/u.exec(args)?.[2];
+    const path = fastApiPathArg(args);
     if (receiver !== undefined && method !== undefined && path !== undefined) {
       decorators.push({
         receiver,
@@ -295,6 +295,14 @@ function fastApiDecorators(
     }
   }
   return decorators;
+}
+
+function fastApiPathArg(args: string): string | undefined {
+  const positional = /^\s*(["'])([^"']*)\1/u.exec(args)?.[2];
+  if (positional !== undefined) {
+    return positional;
+  }
+  return /\bpath\s*=\s*(["'])([^"']*)\1/u.exec(args)?.[2];
 }
 
 function nextFunctionName(lines: string[], start: number): string | null {
@@ -382,7 +390,7 @@ function includeRouterCalls(
   source: string,
 ): Array<{ receiver: string; target: string; prefix: string }> {
   const calls: Array<{ receiver: string; target: string; prefix: string }> = [];
-  for (const match of source.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\.include_router\(/gu)) {
+  for (const match of source.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\.include_router\(/gmu)) {
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
     const args = readPythonCallArgs(source, openParenIndex);

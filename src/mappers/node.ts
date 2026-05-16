@@ -64,7 +64,13 @@ async function nodePackageManagerForPackage(
     return rootPackageManager;
   }
   const packageDir = join(root, packageRoot);
-  for (const lockfile of ["pnpm-lock.yaml", "yarn.lock", "bun.lockb", "package-lock.json"]) {
+  for (const lockfile of [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "package-lock.json",
+  ]) {
     if (await pathExists(join(packageDir, lockfile))) {
       return detectNodePackageManager(packageDir);
     }

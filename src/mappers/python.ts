@@ -589,11 +589,9 @@ function addPythonImportAliases(
       continue;
     }
     const nestedModuleName = appendPythonModuleName(moduleName, importedName);
-    const importedFile =
-      importedName === "router" || importedName.endsWith("_router")
-        ? resolvePythonModuleFile(currentFile, moduleName, sourceFiles)
-        : (resolvePythonModuleFile(currentFile, nestedModuleName, sourceFiles) ??
-          resolvePythonModuleFile(currentFile, moduleName, sourceFiles));
+    const nestedFile = resolvePythonModuleFile(currentFile, nestedModuleName, sourceFiles);
+    const moduleFile = resolvePythonModuleFile(currentFile, moduleName, sourceFiles);
+    const importedFile = importedName === "router" ? moduleFile : (nestedFile ?? moduleFile);
     if (importedFile !== null) {
       aliases.files.set(alias, importedFile);
       if (importedName === "router" || importedName.endsWith("_router")) {

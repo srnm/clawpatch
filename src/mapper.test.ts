@@ -392,6 +392,31 @@ describe("mapFeatures", () => {
     ).toEqual([{ path: "frontend/src/index.test.ts", command: "pnpm --dir frontend test" }]);
   });
 
+  it("uses package-local pnpm workspace markers for fallback Node package roots", async () => {
+    const root = await fixtureRoot("clawpatch-node-fallback-package-workspace-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "root", scripts: { test: "node root.test.js" } }, null, 2),
+    );
+    await writeFixture(root, "package-lock.json", "{}\n");
+    await writeFixture(
+      root,
+      "frontend/package.json",
+      JSON.stringify({ name: "frontend", scripts: { test: "vitest run" } }, null, 2),
+    );
+    await writeFixture(root, "frontend/pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+    await writeFixture(root, "frontend/src/index.ts", "export const frontend = true;\n");
+    await writeFixture(root, "frontend/src/index.test.ts", "import './index';\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.find((feature) => feature.title === "Node source frontend/src")?.tests,
+    ).toEqual([{ path: "frontend/src/index.test.ts", command: "pnpm --dir frontend test" }]);
+  });
+
   it("maps React Router routes and components in a nested frontend app", async () => {
     const root = await fixtureRoot("clawpatch-react-router-map-");
     await writeFixture(root, "pnpm-workspace.yaml", "packages:\n  - frontend\n");
@@ -2112,6 +2137,46 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
 
     expect(titles).toContain("FastAPI route GET /api/v1/users");
     expect(titles).not.toContain("FastAPI route GET /v1/users");
+  });
+
+  it("resolves FastAPI *_router imports as modules before router objects", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-router-module-import-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(root, "backend/routes/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.routes import auth_router",
+        "app = FastAPI()",
+        'app.include_router(auth_router.router, prefix="/auth")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes/auth_router.py",
+      [
+        "from fastapi import APIRouter",
+        "router = APIRouter()",
+        '@router.post("/login")',
+        "def login():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route POST /auth/login");
+    expect(titles).not.toContain("FastAPI route POST /login");
+    expect(titles).not.toContain("FastAPI route POST /api/v1/auth/login");
   });
 
   it("resolves Python console scripts and tests from non-src package roots", async () => {

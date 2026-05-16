@@ -12,6 +12,8 @@ import { mapFeatures } from "./mapper.js";
 import { providerByName } from "./provider.js";
 import { buildFixPrompt, buildReviewPrompt, buildRevalidatePrompt } from "./prompt.js";
 import {
+  claimFeature,
+  clearFeatureLockFiles,
   ensureStateDirs,
   readFeatures,
   readFinding,
@@ -25,6 +27,7 @@ import {
   writePatchAttempt,
   writeProject,
   writeRun,
+  releaseFeatureLock,
 } from "./state.js";
 import {
   CommandResult,
@@ -180,6 +183,7 @@ export async function reviewCommand(
             currentRunId,
             index,
             total: features.length,
+            allowNonPendingFeatureReview: stringFlag(flags, "feature") !== undefined,
           });
           findingIds.push(...reviewed.findingIds);
         } catch (error: unknown) {
@@ -372,10 +376,21 @@ type ReviewFeatureOptions = {
   currentRunId: string;
   index: number;
   total: number;
+  allowNonPendingFeatureReview: boolean;
 };
 
 async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingIds: string[] }> {
-  const { context, loaded, config, provider, feature, currentRunId, index, total } = options;
+  const {
+    context,
+    loaded,
+    config,
+    provider,
+    feature,
+    currentRunId,
+    index,
+    total,
+    allowNonPendingFeatureReview,
+  } = options;
   const started = Date.now();
   let locked: FeatureRecord | null = null;
   emitReviewProgress(context, "feature-start", {
@@ -385,9 +400,15 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
     title: feature.title,
   });
   try {
-    const lockedFeature = lockFeature(feature, currentRunId);
+    const lockedFeature = await claimFeature(
+      loaded.paths,
+      feature.featureId,
+      featureLock(currentRunId),
+      {
+        allowNonPending: allowNonPendingFeatureReview,
+      },
+    );
     locked = lockedFeature;
-    await writeFeature(loaded.paths, lockedFeature);
     const prompt = await buildReviewPrompt(loaded.root, loaded.project, lockedFeature, config);
     const output = await provider.review(loaded.root, prompt, config.provider.model);
     const records = output.findings
@@ -421,6 +442,8 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
       updatedAt: nowIso(),
     };
     await writeFeature(loaded.paths, updated);
+    await releaseFeatureLock(loaded.paths, lockedFeature.featureId);
+    locked = null;
     emitReviewProgress(context, "feature-done", {
       index: index + 1,
       total,
@@ -432,23 +455,27 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (locked !== null) {
-      await writeFeature(loaded.paths, {
-        ...locked,
-        status: "error",
-        lock: null,
-        analysisHistory: [
-          ...locked.analysisHistory,
-          {
-            runId: currentRunId,
-            kind: "review-error",
-            summary: message,
-            provider: provider.name,
-            model: config.provider.model,
-            createdAt: nowIso(),
-          },
-        ],
-        updatedAt: nowIso(),
-      });
+      try {
+        await writeFeature(loaded.paths, {
+          ...locked,
+          status: "error",
+          lock: null,
+          analysisHistory: [
+            ...locked.analysisHistory,
+            {
+              runId: currentRunId,
+              kind: "review-error",
+              summary: message,
+              provider: provider.name,
+              model: config.provider.model,
+              createdAt: nowIso(),
+            },
+          ],
+          updatedAt: nowIso(),
+        });
+      } finally {
+        await releaseFeatureLock(loaded.paths, locked.featureId);
+      }
     }
     emitReviewProgress(context, "feature-error", {
       index: index + 1,
@@ -755,7 +782,8 @@ export async function cleanLocksCommand(context: AppContext): Promise<unknown> {
     });
     cleared += 1;
   }
-  return { cleared };
+  const lockFilesCleared = await clearFeatureLockFiles(loaded.paths);
+  return { cleared, lockFilesCleared };
 }
 
 async function loadProjectState(context: AppContext) {
@@ -949,20 +977,12 @@ function emitRevalidateProgress(
   process.stderr.write(`clawpatch revalidate ${event}${values.length > 0 ? ` ${values}` : ""}\n`);
 }
 
-function lockFeature(feature: FeatureRecord, currentRunId: string): FeatureRecord {
-  if (feature.lock !== null) {
-    throw new ClawpatchError(`feature locked: ${feature.featureId}`, 7, "lock-conflict");
-  }
+function featureLock(currentRunId: string): NonNullable<FeatureRecord["lock"]> {
   return {
-    ...feature,
-    status: "claimed",
-    lock: {
-      lockedByRunId: currentRunId,
-      lockedAt: nowIso(),
-      hostname: hostname(),
-      pid: process.pid,
-    },
-    updatedAt: nowIso(),
+    lockedByRunId: currentRunId,
+    lockedAt: nowIso(),
+    hostname: hostname(),
+    pid: process.pid,
   };
 }
 

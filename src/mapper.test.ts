@@ -409,6 +409,8 @@ describe("mapFeatures", () => {
         "import UserPage from './pages/UserPage';",
         "import LinkedPage from './pages/LinkedPage';",
         "import ErrorPage from './pages/ErrorPage';",
+        "import DashboardPage from './pages/DashboardPage';",
+        "import Icon from './pages/Icon';",
         "import EscapePage from '../../../outside';",
         "export default function App() {",
         "  return <Routes>",
@@ -424,6 +426,7 @@ describe("mapFeatures", () => {
         "    <Route index={false} element={<ReportsPage />} />",
         '    <Route path="/suspense" element={<Suspense><SuspensePage /></Suspense>} />',
         '    <Route path="/with-error" element={<ReportsPage />} errorElement={<ErrorPage />} />',
+        '    <Route path="/dashboard" element={<DashboardPage icon={<Icon />} />} />',
         '    <Route element={<ReportsPage />} path="/reports" />',
         '    <Route path="/settings" element={<SettingsPage />} />',
         '    <Route path="/linked" element={<LinkedPage />} />',
@@ -486,6 +489,16 @@ describe("mapFeatures", () => {
     );
     await writeFixture(
       root,
+      "frontend/src/pages/DashboardPage.tsx",
+      "export default function DashboardPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "frontend/src/pages/Icon.tsx",
+      "export default function Icon() { return null; }\n",
+    );
+    await writeFixture(
+      root,
       "frontend/src/pages/ReactLazyPage.tsx",
       "export default function ReactLazyPage() { return null; }\n",
     );
@@ -523,6 +536,7 @@ describe("mapFeatures", () => {
     const withError = result.features.find(
       (feature) => feature.title === "React route /with-error",
     );
+    const dashboard = result.features.find((feature) => feature.title === "React route /dashboard");
     const user = result.features.find((feature) => feature.title === "React route /users/:id");
     const linked = result.features.find((feature) => feature.title === "React route /linked");
     const escape = result.features.find((feature) => feature.title === "React route /escape");
@@ -545,6 +559,7 @@ describe("mapFeatures", () => {
     expect(reactLazy?.entrypoints[0]?.path).toBe("frontend/src/pages/ReactLazyPage.tsx");
     expect(reports?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(withError?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
+    expect(dashboard?.entrypoints[0]?.path).toBe("frontend/src/pages/DashboardPage.tsx");
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
     expect(suspense?.entrypoints[0]?.path).toBe("frontend/src/pages/SuspensePage.tsx");
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
@@ -582,6 +597,31 @@ describe("mapFeatures", () => {
     const result = await mapFeatures(root, project, []);
 
     expect(result.features.map((feature) => feature.title)).not.toContain("React route /custom");
+  });
+
+  it("does not discover React packages through symlinked package roots", async () => {
+    const root = await fixtureRoot("clawpatch-react-symlink-package-");
+    const outside = join(root, "../outside-react-package");
+    await writeFixture(
+      root,
+      "../outside-react-package/package.json",
+      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "../outside-react-package/src/App.tsx",
+      [
+        "import { Route, Routes } from 'react-router-dom';",
+        "function OutsidePage() { return null; }",
+        'export function App() { return <Routes><Route path="/outside" element={<OutsidePage />} /></Routes>; }',
+      ].join("\n"),
+    );
+    await symlink(outside, join(root, "frontend"), "dir");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).not.toContain("React route /outside");
   });
 
   it("discovers React packages from workspace globs and honors excludes", async () => {
@@ -1624,7 +1664,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       [
         "from fastapi import FastAPI",
         "from fastapi import APIRouter",
-        "from myapp.routes.auth import router as auth_router",
+        "from myapp.routes.auth import router as auth_router  # noqa",
         "from .routes.health import router as health_router",
         "from . import routes",
         "from .api import router as api_router",

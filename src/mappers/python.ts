@@ -537,7 +537,7 @@ function addPythonImportAliases(
   sourceFiles: ReadonlySet<string>,
 ): void {
   for (const imported of imports.replace(/[()]/gu, "").split(",")) {
-    const item = imported.trim();
+    const item = imported.replace(/#.*/u, "").trim();
     if (item.length === 0) {
       continue;
     }

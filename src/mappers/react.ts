@@ -547,10 +547,14 @@ function routeElementComponent(props: string): string | null {
   if (element === undefined) {
     return null;
   }
-  const components = [...element.matchAll(/<([A-Z][A-Za-z0-9_]*)(?=[\s/>])/gu)]
-    .map((match) => match[1])
-    .filter((component): component is string => component !== undefined);
-  return components.at(-1) ?? null;
+  const root = readJsxOpeningTag(element, 0);
+  if (root === null) {
+    return null;
+  }
+  if (root.selfClosing || !isRouteWrapperComponent(root.name)) {
+    return root.name;
+  }
+  return readJsxOpeningTag(element, root.end)?.name ?? root.name;
 }
 
 function readJsxExpressionProp(props: string, propName: string): string | undefined {
@@ -586,6 +590,57 @@ function readJsxExpressionProp(props: string, propName: string): string | undefi
     }
   }
   return undefined;
+}
+
+function readJsxOpeningTag(
+  source: string,
+  start: number,
+): { name: string; end: number; selfClosing: boolean } | null {
+  const openIndex = source.indexOf("<", start);
+  if (openIndex === -1 || source[openIndex + 1] === "/") {
+    return null;
+  }
+  const nameMatch = /^<([A-Z][A-Za-z0-9_]*)(?=[\s/>])/u.exec(source.slice(openIndex));
+  const name = nameMatch?.[1];
+  if (name === undefined) {
+    return null;
+  }
+  let braceDepth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = openIndex + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+    } else if (char === "{") {
+      braceDepth += 1;
+    } else if (char === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+    } else if (char === ">" && braceDepth === 0) {
+      return {
+        name,
+        end: index + 1,
+        selfClosing: source.slice(openIndex, index).trimEnd().endsWith("/"),
+      };
+    }
+  }
+  return null;
+}
+
+function isRouteWrapperComponent(name: string): boolean {
+  return new Set(["Suspense", "RequireAuth", "ProtectedRoute", "PrivateRoute", "AuthGuard"]).has(
+    name,
+  );
 }
 
 function stripJsxComments(source: string): string {
@@ -840,10 +895,11 @@ async function readPackageJsonAt(root: string, path: string): Promise<PackageJso
 }
 
 async function safeFile(root: string, path: string): Promise<boolean> {
-  if (shouldSkip(path) || !(await pathExists(join(root, path)))) {
+  const fullPath = join(root, path);
+  if (shouldSkip(path) || !(await pathExists(fullPath)) || !realPathInsideRoot(root, fullPath)) {
     return false;
   }
-  const info = await lstat(join(root, path));
+  const info = await lstat(fullPath);
   return info.isFile() && !info.isSymbolicLink();
 }
 

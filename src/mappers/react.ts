@@ -18,6 +18,8 @@ type PackageJson = {
   name?: unknown;
   dependencies?: unknown;
   devDependencies?: unknown;
+  peerDependencies?: unknown;
+  optionalDependencies?: unknown;
   scripts?: unknown;
 };
 
@@ -298,7 +300,9 @@ async function expandWorkspacePattern(root: string, pattern: string): Promise<st
 function hasReactDependency(pkg: PackageJson): boolean {
   return (
     dependencyFieldHas(pkg.dependencies, "react") ||
-    dependencyFieldHas(pkg.devDependencies, "react")
+    dependencyFieldHas(pkg.devDependencies, "react") ||
+    dependencyFieldHas(pkg.peerDependencies, "react") ||
+    dependencyFieldHas(pkg.optionalDependencies, "react")
   );
 }
 

@@ -246,7 +246,7 @@ function fastApiRoutesInFile(
 function apiRouterPrefixes(source: string): Map<string, string> {
   const prefixes = new Map<string, string>();
   for (const match of source.matchAll(
-    /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:fastapi\.)?APIRouter\(/gu,
+    /\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?APIRouter\(/gu,
   )) {
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
@@ -262,7 +262,7 @@ function apiRouterPrefixes(source: string): Map<string, string> {
 function fastApiReceivers(source: string): Set<string> {
   const receivers = new Set<string>();
   for (const match of source.matchAll(
-    /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:fastapi\.)?(?:FastAPI|APIRouter)\(/gu,
+    /\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?(?:FastAPI|APIRouter)\(/gu,
   )) {
     const receiver = match[1];
     if (receiver !== undefined) {
@@ -278,7 +278,7 @@ function fastApiDecorators(
   const decorators: Array<{ receiver: string; method: string; path: string; lineIndex: number }> =
     [];
   const methods = fastApiMethods.join("|");
-  const pattern = new RegExp(`@([A-Za-z_][A-Za-z0-9_]*)\\.(${methods})\\(`, "gu");
+  const pattern = new RegExp(`^\\s*@([A-Za-z_][A-Za-z0-9_]*)\\.(${methods})\\(`, "gmu");
   for (const match of source.matchAll(pattern)) {
     const receiver = match[1];
     const method = match[2];

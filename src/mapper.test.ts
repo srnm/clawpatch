@@ -550,7 +550,11 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "libs/web/package.json",
-      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
+      JSON.stringify(
+        { peerDependencies: { react: "1.0.0" }, dependencies: { "react-router-dom": "1.0.0" } },
+        null,
+        2,
+      ),
     );
     await writeFixture(
       root,
@@ -1264,7 +1268,8 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       "main.py",
       [
         "import fastapi",
-        "app = fastapi.FastAPI()",
+        "app: fastapi.FastAPI = fastapi.FastAPI()",
+        '# @app.get("/old")',
         "@app.get(",
         '    "/health",',
         "    response_model=dict,",
@@ -1278,6 +1283,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     const result = await mapFeatures(root, project, []);
 
     expect(result.features.map((feature) => feature.title)).toContain("FastAPI route GET /health");
+    expect(result.features.map((feature) => feature.title)).not.toContain("FastAPI route GET /old");
   });
 
   it("applies same-file FastAPI router include prefixes", async () => {
@@ -1296,7 +1302,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
         "def auth():",
         "    return True",
         "app = FastAPI()",
-        'router = fastapi.APIRouter(dependencies=[Depends(auth)], prefix="/v1")',
+        'router: fastapi.APIRouter = fastapi.APIRouter(dependencies=[Depends(auth)], prefix="/v1")',
         'app.include_router(router, prefix="/api")',
         '@router.get("/items")',
         "def items():",

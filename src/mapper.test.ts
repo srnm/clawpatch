@@ -252,6 +252,26 @@ describe("mapFeatures", () => {
     ).not.toContain("vendor/bundle/ignored.rb");
   });
 
+  it("treats gems.rb projects as Bundler-backed", async () => {
+    const root = await fixtureRoot("clawpatch-map-gems-rb-");
+    await writeFixture(
+      root,
+      "gems.rb",
+      "source 'https://rubygems.org'\ngem 'rspec'\ngem 'rubocop'\n",
+    );
+    await writeFixture(root, "lib/fixture.rb", "module Fixture\nend\n");
+    await writeFixture(root, "spec/fixture_spec.rb", "RSpec.describe Fixture\n");
+
+    const project = await detectProject(root);
+
+    expect(project.detected.languages).toContain("ruby");
+    expect(project.detected.packageManagers).toContain("bundler");
+    expect(project.detected.commands).toMatchObject({
+      lint: "bundle exec rubocop",
+      test: "bundle exec rspec",
+    });
+  });
+
   it("maps Gemfile-only Jekyll sites without mistaking dependencies for project names", async () => {
     const root = await fixtureRoot("clawpatch-map-jekyll-");
     await writeFixture(
@@ -335,6 +355,11 @@ describe("mapFeatures", () => {
     await writeFixture(root, "app/views/widgets/index.json.jbuilder", "json.widgets []\n");
     await writeFixture(root, "app/assets/javascripts/widgets.coffee", "console.log 'widgets'\n");
     await writeFixture(root, "app/assets/stylesheets/widgets.scss", ".widgets { color: black; }\n");
+    await writeFixture(
+      root,
+      "app/javascript/controllers/widgets_controller.js",
+      "export function connect() {}\n",
+    );
     await writeFixture(root, "src/client.ts", "export function client() {}\n");
     await writeFixture(root, "lib/client.ts", "export function libClient() {}\n");
     await writeFixture(root, "pages/home.tsx", "export function Home() { return null; }\n");
@@ -362,6 +387,7 @@ describe("mapFeatures", () => {
     expect(titles).not.toContain("Ruby CLI command rails");
     expect(titles).not.toContain("Node source app");
     expect(titles).not.toContain("Node source app/assets");
+    expect(titles).toContain("Node source app/javascript");
     expect(titles).toContain("Node source src");
     expect(titles).toContain("Node source lib");
     expect(titles).toContain("Node source pages");
@@ -374,6 +400,13 @@ describe("mapFeatures", () => {
     );
     expect(railsConfig?.ownedFiles.map((ref) => ref.path)).toContain("config/routes.rb");
     expect(railsConfig?.ownedFiles.map((ref) => ref.path)).not.toContain("config/secrets.yml");
+    expect(
+      result.features.filter((feature) =>
+        feature.ownedFiles.some(
+          (ref) => ref.path === "app/javascript/controllers/widgets_controller.js",
+        ),
+      ),
+    ).toHaveLength(1);
     expect(referencedFiles).not.toContain("config/secrets.yml");
   });
 

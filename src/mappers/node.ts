@@ -497,9 +497,10 @@ async function packageContextFiles(root: string, info: PackageInfo): Promise<See
 
 async function packageSourceRoots(root: string, info: PackageInfo): Promise<string[]> {
   if (await isRailsPackage(root, info.root)) {
+    const railsSourceDirectories = sourceDirectories.filter((dir) => dir !== "app");
     return [
       ...new Set(
-        [...sourceDirectories, "app/javascript", "app/packs", "app/frontend"].map((dir) =>
+        [...railsSourceDirectories, "app/javascript", "app/packs", "app/frontend"].map((dir) =>
           packageRelativePath(info.root, dir),
         ),
       ),

@@ -245,7 +245,7 @@ async function detectPackageManagers(root: string): Promise<string[]> {
     found.push((await pathExists(join(root, "requirements.txt"))) ? "pip" : "python");
   }
   if ((await isRubyProject(root)) && !found.some((name) => rubyPackageManagers.has(name))) {
-    found.push((await pathExists(join(root, "Gemfile"))) ? "bundler" : "ruby");
+    found.push((await hasBundlerConfig(root)) ? "bundler" : "ruby");
   }
   return found;
 }
@@ -345,7 +345,7 @@ function pythonRunCommand(runner: string | null, command: string): string {
 
 async function rubyDefaultCommands(root: string): Promise<ProjectCommands> {
   const source = await rubyDependencySource(root);
-  const hasBundle = await pathExists(join(root, "Gemfile"));
+  const hasBundle = await hasBundlerConfig(root);
   const hasRspec = /\brspec\b/iu.test(source) || (await containsRubySpecFile(root, 5));
   const hasMinitest = /\bminitest\b/iu.test(source) || (await containsRubyTestFile(root, 5));
   const hasRubocop =
@@ -359,6 +359,10 @@ async function rubyDefaultCommands(root: string): Promise<ProjectCommands> {
     format: null,
     test: hasRspec ? `${run}rspec` : hasMinitest ? `${run}rake test` : null,
   };
+}
+
+async function hasBundlerConfig(root: string): Promise<boolean> {
+  return (await pathExists(join(root, "Gemfile"))) || (await pathExists(join(root, "gems.rb")));
 }
 
 async function rubyDependencySource(root: string): Promise<string> {

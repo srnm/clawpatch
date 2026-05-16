@@ -298,7 +298,6 @@ function nextFunctionName(lines: string[], start: number): string | null {
 }
 
 function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
-  const exportedRouterPrefixes = new Map<string, string>();
   const prefixes = new Map<string, string>();
   const sourceFiles = new Set(sources.keys());
   const aliasesByFile = new Map<string, Map<string, string>>();
@@ -318,19 +317,18 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
     for (const [file, includes] of includesByFile) {
       const aliases = aliasesByFile.get(file) ?? new Map<string, string>();
       const localRouterPrefixes = routerPrefixesByFile.get(file) ?? new Map<string, string>();
+      const mounts = routerMountPrefixesByFile.get(file);
       for (const include of includes) {
         const receiverRouterPrefix = localRouterPrefixes.get(include.receiver) ?? "";
         const parentPrefix =
           include.receiver === "app"
             ? ""
             : joinRoutePaths(
-                exportedRouterPrefixes.get(include.receiver) ?? prefixes.get(file) ?? "",
+                mounts?.get(include.receiver) ?? prefixes.get(file) ?? "",
                 receiverRouterPrefix,
               );
         const fullPrefix = joinRoutePaths(parentPrefix, include.prefix);
         if (!include.target.includes(".")) {
-          changed = setMapValue(exportedRouterPrefixes, include.target, fullPrefix) || changed;
-          const mounts = routerMountPrefixesByFile.get(file);
           if (mounts !== undefined) {
             changed = setMapValue(mounts, include.target, fullPrefix) || changed;
           }
@@ -365,18 +363,47 @@ function includeRouterCalls(
   source: string,
 ): Array<{ receiver: string; target: string; prefix: string }> {
   const calls: Array<{ receiver: string; target: string; prefix: string }> = [];
-  for (const match of source.matchAll(
-    /([A-Za-z_][A-Za-z0-9_]*)\.include_router\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.router)?)([\s\S]*?)\)/gu,
-  )) {
+  for (const match of source.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\.include_router\(/gu)) {
     const receiver = match[1];
-    const target = match[2];
-    const rest = match[3] ?? "";
-    const prefixMatch = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(rest);
+    const openParenIndex = match.index + match[0].length - 1;
+    const args = readPythonCallArgs(source, openParenIndex);
+    const target = /^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.router)?)/u.exec(args)?.[1];
+    const prefixMatch = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(args);
     if (receiver !== undefined && target !== undefined) {
       calls.push({ receiver, target, prefix: prefixMatch?.[2] ?? "" });
     }
   }
   return calls;
+}
+
+function readPythonCallArgs(source: string, openParenIndex: number): string {
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = openParenIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(openParenIndex + 1, index);
+      }
+    }
+  }
+  return source.slice(openParenIndex + 1);
 }
 
 function pythonImportAliases(

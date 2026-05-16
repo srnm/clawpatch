@@ -1131,12 +1131,14 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       root,
       "backend/main.py",
       [
-        "from fastapi import FastAPI",
+        "from fastapi import Depends, FastAPI",
         "from backend.routes.auth_routes import router as auth_router",
         "from backend.routes.health_routes import router as health_router",
         "from backend.api import api_router",
+        "def auth():",
+        "    return True",
         "app = FastAPI()",
-        'app.include_router(auth_router, prefix="/api/v1/auth")',
+        'app.include_router(auth_router, dependencies=[Depends(auth)], prefix="/api/v1/auth")',
         "app.include_router(health_router)",
         'app.include_router(api_router, prefix="/api/v1")',
         '@app.get("/health")',
@@ -1277,15 +1279,21 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       "src/myapp/main.py",
       [
         "from fastapi import FastAPI",
+        "from fastapi import APIRouter",
         "from myapp.routes.auth import router as auth_router",
         "from .routes.health import router as health_router",
         "from . import routes",
         "from .api import router as api_router",
         "app = FastAPI()",
+        "router = APIRouter()",
+        'app.include_router(router, prefix="/local")',
         'app.include_router(auth_router, prefix="/api")',
         "app.include_router(health_router)",
         'app.include_router(routes.router, prefix="/v1")',
         'app.include_router(api_router, prefix="/nested")',
+        '@router.get("/ping")',
+        "def local_ping():",
+        "    return {'ok': True}",
       ].join("\n"),
     );
     await writeFixture(
@@ -1348,6 +1356,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     const titles = result.features.map((feature) => feature.title);
 
     expect(titles).toContain("FastAPI route GET /api/users/login");
+    expect(titles).toContain("FastAPI route GET /local/ping");
     expect(titles).toContain("FastAPI route GET /ready");
     expect(titles).toContain("FastAPI route GET /v1/status");
     expect(titles).toContain("FastAPI route GET /nested/api/users/{user_id}");

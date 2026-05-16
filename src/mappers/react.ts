@@ -551,10 +551,15 @@ function routeElementComponent(props: string): string | null {
   if (root === null) {
     return null;
   }
-  if (root.selfClosing || !isRouteWrapperComponent(root.name)) {
-    return root.name;
+  let current = root;
+  while (!current.selfClosing && isRouteWrapperComponent(current.name)) {
+    const child = readJsxOpeningTag(element, current.end);
+    if (child === null) {
+      break;
+    }
+    current = child;
   }
-  return readJsxOpeningTag(element, root.end)?.name ?? root.name;
+  return current.name;
 }
 
 function topLevelPropValue(props: string, name: string): string | null | undefined {
@@ -600,7 +605,7 @@ function propNameMatchesAt(source: string, name: string, index: number): boolean
   );
 }
 
-function readTopLevelPropValue(props: string, index: number): string | null {
+function readTopLevelPropValue(props: string, index: number): string | null | undefined {
   let cursor = index;
   while (/\s/u.test(props[cursor] ?? "")) {
     cursor += 1;
@@ -619,7 +624,15 @@ function readTopLevelPropValue(props: string, index: number): string | null {
   }
   if (props[cursor] === "{") {
     const end = props.indexOf("}", cursor + 1);
-    return end === -1 ? "" : props.slice(cursor + 1, end).trim();
+    if (end === -1) {
+      return undefined;
+    }
+    const expression = props.slice(cursor + 1, end).trim();
+    if (expression === "true") {
+      return "true";
+    }
+    const stringMatch = /^(["'])(.*)\1$/su.exec(expression);
+    return stringMatch?.[2];
   }
   return null;
 }

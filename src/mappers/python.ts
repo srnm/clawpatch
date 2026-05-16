@@ -370,7 +370,8 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
       for (const include of includes) {
         const receiverRouterPrefix = localRouterPrefixes.get(include.receiver) ?? "";
         const mountedPrefixes = mounts?.get(include.receiver);
-        const fallbackPrefixes = receiverCount <= 1 ? prefixes.get(file) : undefined;
+        const filePrefixes = prefixes.get(file);
+        const fallbackPrefixes = receiverCount <= 1 ? filePrefixes : undefined;
         const parentPrefixes = appReceivers.has(include.receiver)
           ? [""]
           : (mountedPrefixes ?? fallbackPrefixes)?.map((prefix) =>
@@ -384,7 +385,7 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
           if (!include.target.includes(".") && mounts !== undefined) {
             changed = addMapValue(mounts, include.target, fullPrefix) || changed;
           }
-          const moduleFile = aliases.files.get(include.target.split(".")[0] ?? "");
+          const moduleFile = moduleFileForRouterTarget(include.target, aliases);
           if (moduleFile !== undefined) {
             changed = addMapValue(prefixes, moduleFile, fullPrefix) || changed;
             const moduleMounts = routerMountPrefixesByFile.get(moduleFile);
@@ -401,6 +402,17 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
     }
   }
   for (const file of sources.keys()) {
+    if (!prefixes.has(file)) {
+      const localRouterPrefixes = routerPrefixesByFile.get(file) ?? new Map<string, string>();
+      const mounts = routerMountPrefixesByFile.get(file);
+      const receivers = fastApiReceiversByFile.get(file) ?? new Set<string>();
+      for (const include of includesByFile.get(file) ?? []) {
+        if (receivers.has(include.receiver) && mounts !== undefined) {
+          const receiverPrefix = localRouterPrefixes.get(include.receiver) ?? "";
+          addMapValue(mounts, include.target, joinRoutePaths(receiverPrefix, include.prefix));
+        }
+      }
+    }
     if (!prefixes.has(file) && /(^|\/)routes\/[^/]+\.py$/u.test(file)) {
       prefixes.set(file, [inferredRoutePrefix(file)]);
     }
@@ -421,10 +433,25 @@ function emptyPythonImportAliases(): PythonImportAliases {
   return { files: new Map(), routerNames: new Map() };
 }
 
+function moduleFileForRouterTarget(
+  target: string,
+  aliases: PythonImportAliases,
+): string | undefined {
+  const parts = target.split(".");
+  for (let length = parts.length; length > 0; length -= 1) {
+    const file = aliases.files.get(parts.slice(0, length).join("."));
+    if (file !== undefined) {
+      return file;
+    }
+  }
+  return undefined;
+}
+
 function importedRouterName(target: string, aliases: PythonImportAliases): string | undefined {
-  const [localName, routerName] = target.split(".");
-  if (routerName !== undefined) {
-    return routerName;
+  const parts = target.split(".");
+  const localName = parts[0];
+  if (parts.length > 1) {
+    return parts.at(-1);
   }
   return localName === undefined ? undefined : (aliases.routerNames.get(localName) ?? localName);
 }
@@ -525,7 +552,8 @@ function pythonImportAliases(
     const alias = match[2] ?? moduleName?.split(".").at(-1);
     const moduleFile =
       moduleName === undefined ? null : resolvePythonModuleFile(file, moduleName, sourceFiles);
-    if (alias !== undefined && moduleFile !== null) {
+    if (moduleName !== undefined && alias !== undefined && moduleFile !== null) {
+      aliases.files.set(moduleName, moduleFile);
       aliases.files.set(alias, moduleFile);
     }
   }

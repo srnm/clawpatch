@@ -412,6 +412,7 @@ describe("mapFeatures", () => {
         "import DashboardPage from './pages/DashboardPage';",
         "import Icon from './pages/Icon';",
         "import Widget from './pages/Widget';",
+        "import RequireAuth from './RequireAuth';",
         "import EscapePage from '../../../outside';",
         "export default function App() {",
         "  return <Routes>",
@@ -428,6 +429,9 @@ describe("mapFeatures", () => {
         '    <Route path="/suspense" element={<Suspense><SuspensePage /></Suspense>} />',
         '    <Route path="/with-error" element={<ReportsPage />} errorElement={<ErrorPage />} />',
         '    <Route path="/dashboard" element={<DashboardPage icon={<Icon />} />} />',
+        '    <Route path="/nested-wrapper" element={<Suspense><RequireAuth><ReportsPage /></RequireAuth></Suspense>} />',
+        "    <Route path={HOME} element={<ReportsPage />} />",
+        '    <Route path={"/quoted"} element={<ReportsPage />} />',
         '    <Route element={<Widget path="/inner" />} />',
         '    <Route element={<ReportsPage />} path="/reports" />',
         '    <Route path="/settings" element={<SettingsPage />} />',
@@ -506,6 +510,11 @@ describe("mapFeatures", () => {
     );
     await writeFixture(
       root,
+      "frontend/src/RequireAuth.tsx",
+      "export default function RequireAuth({ children }: { children: unknown }) { return children; }\n",
+    );
+    await writeFixture(
+      root,
       "frontend/src/pages/ReactLazyPage.tsx",
       "export default function ReactLazyPage() { return null; }\n",
     );
@@ -544,6 +553,10 @@ describe("mapFeatures", () => {
       (feature) => feature.title === "React route /with-error",
     );
     const dashboard = result.features.find((feature) => feature.title === "React route /dashboard");
+    const nestedWrapper = result.features.find(
+      (feature) => feature.title === "React route /nested-wrapper",
+    );
+    const quoted = result.features.find((feature) => feature.title === "React route /quoted");
     const user = result.features.find((feature) => feature.title === "React route /users/:id");
     const linked = result.features.find((feature) => feature.title === "React route /linked");
     const escape = result.features.find((feature) => feature.title === "React route /escape");
@@ -567,6 +580,8 @@ describe("mapFeatures", () => {
     expect(reports?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(withError?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(dashboard?.entrypoints[0]?.path).toBe("frontend/src/pages/DashboardPage.tsx");
+    expect(nestedWrapper?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
+    expect(quoted?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
     expect(suspense?.entrypoints[0]?.path).toBe("frontend/src/pages/SuspensePage.tsx");
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
@@ -577,6 +592,7 @@ describe("mapFeatures", () => {
     expect(titles).not.toContain("React route /trailing-old");
     expect(titles).not.toContain("React route /test-only");
     expect(titles).not.toContain("React route /inner");
+    expect(titles).not.toContain("React route /HOME");
     expect(titles.filter((title) => title === "React route /")).toHaveLength(1);
     expect(dialog?.source).toBe("react-component");
     expect(dialog?.ownedFiles).toEqual([
@@ -1953,6 +1969,46 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).toContain("FastAPI route GET /stats");
     expect(titles).not.toContain("FastAPI route GET /public/stats");
     expect(titles).not.toContain("FastAPI route GET /public/child/logs");
+  });
+
+  it("maps local and multi-segment FastAPI router includes", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-local-and-dotted-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "import backend.routes",
+        "app = FastAPI()",
+        'app.include_router(backend.routes.router, prefix="/api")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes.py",
+      [
+        "from fastapi import APIRouter",
+        'router = APIRouter(prefix="/v1")',
+        "users_router = APIRouter()",
+        'router.include_router(users_router, prefix="/users")',
+        '@users_router.get("/{user_id}")',
+        "def user(user_id: str):",
+        "    return {'id': user_id}",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /api/v1/users/{user_id}");
+    expect(titles).not.toContain("FastAPI route GET /{user_id}");
   });
 
   it("applies FastAPI prefixes to dotted router includes in multi-router modules", async () => {

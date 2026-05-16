@@ -550,19 +550,28 @@ describe("mapFeatures", () => {
       "Gem::Specification.new do |spec|\n  spec.name = 'engine'\n  spec.add_dependency 'rails'\nend\n",
     );
     await writeFixture(root, "engine/lib/engine.rb", "module Engine\nend\n");
+    await writeFixture(root, "engine/test/test_engine.rb", "require 'minitest/autorun'\n");
     await writeFixture(root, "config/application.rb", "module NotRails\nend\n");
     await writeFixture(root, "app/assets/admin.ts", "export const admin = true;\n");
 
     const project = await detectProject(root);
     const result = await mapFeatures(root, project, []);
     const titles = result.features.map((feature) => feature.title);
+    const rubySource = result.features.find(
+      (feature) => feature.title === "Ruby source engine/lib",
+    );
     const nodeAsset = result.features.find((feature) =>
       feature.ownedFiles.some((file) => file.path === "app/assets/admin.ts"),
     );
 
     expect(project.detected.languages).toContain("ruby");
     expect(project.detected.frameworks).not.toContain("rails");
+    expect(project.detected.commands.test).toBe("rake test");
     expect(titles).not.toContain("Rails application configuration");
+    expect(titles).toContain("Ruby test suite engine/test");
+    expect(rubySource?.tests).toEqual([
+      { path: "engine/test/test_engine.rb", command: "rake test" },
+    ]);
     expect(nodeAsset?.title).toBe("Node source app");
   });
 

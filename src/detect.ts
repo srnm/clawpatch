@@ -1062,13 +1062,51 @@ async function containsRubySpecFile(root: string, maxDepth: number): Promise<boo
 async function containsRubyTestFile(root: string, maxDepth: number): Promise<boolean> {
   return (
     (await containsFileMatching(root, maxDepth, (entry) => entry.endsWith("_test.rb"))) ||
-    (await containsFileMatching(root, 0, isRubyPrefixedMinitestFileName)) ||
-    (await containsFileMatching(join(root, "test"), maxDepth, isRubyPrefixedMinitestFileName))
+    (await containsRubyPrefixedMinitestFile(root, maxDepth))
   );
 }
 
 function isRubyPrefixedMinitestFileName(entry: string): boolean {
   return /^test_.+\.rb$/u.test(entry) && !/^test_helpers?\.rb$/u.test(entry);
+}
+
+async function containsRubyPrefixedMinitestFile(
+  dir: string,
+  remainingDepth: number,
+  relativeDir = "",
+): Promise<boolean> {
+  if (remainingDepth < 0 || !(await pathExists(dir))) {
+    return false;
+  }
+  const dirInfo = await lstat(dir);
+  if (!dirInfo.isDirectory() || dirInfo.isSymbolicLink()) {
+    return false;
+  }
+  for (const entry of await readdir(dir)) {
+    if (shouldSkipSearchEntry(entry)) {
+      continue;
+    }
+    const full = join(dir, entry);
+    const path = relativeDir === "" ? entry : `${relativeDir}/${entry}`;
+    const info = await lstat(full);
+    if (info.isSymbolicLink()) {
+      continue;
+    }
+    if (
+      info.isFile() &&
+      isRubyPrefixedMinitestFileName(entry) &&
+      (relativeDir === "" || /(^|\/)test$/u.test(relativeDir))
+    ) {
+      return true;
+    }
+    if (
+      info.isDirectory() &&
+      (await containsRubyPrefixedMinitestFile(full, remainingDepth - 1, path))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function containsFileNamed(root: string, name: string, maxDepth: number): Promise<boolean> {

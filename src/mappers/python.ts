@@ -290,7 +290,9 @@ function apiRouterPrefixes(source: string): Map<string, string> {
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
     const args = stripLineComments(readPythonCallArgs(source, openParenIndex), "#");
-    const prefix = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(args)?.[2];
+    const prefixExpression = topLevelKeywordValue(args, "prefix");
+    const prefix =
+      prefixExpression === undefined ? undefined : pythonStringLiteralExpression(prefixExpression);
     if (receiver !== undefined && prefix !== undefined) {
       prefixes.set(receiver, prefix);
     }
@@ -481,7 +483,8 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
         }
       }
     }
-    if (!prefixes.has(file) && /(^|\/)routes\/[^/]+\.py$/u.test(file)) {
+    const hasLocalRouterPrefix = (routerPrefixesByFile.get(file)?.size ?? 0) > 0;
+    if (!prefixes.has(file) && !hasLocalRouterPrefix && /(^|\/)routes\/[^/]+\.py$/u.test(file)) {
       prefixes.set(file, [inferredRoutePrefix(file)]);
     }
   }
@@ -560,7 +563,7 @@ function includeRouterPrefix(args: string, source: string): string | null {
   if (expression === undefined) {
     return "";
   }
-  const literal = /^(['"])([^'"]*)\1/u.exec(expression)?.[2];
+  const literal = pythonStringLiteralExpression(expression);
   if (literal !== undefined) {
     return literal;
   }
@@ -570,7 +573,14 @@ function includeRouterPrefix(args: string, source: string): string | null {
 
 function pythonStringConstant(source: string, name: string): string | null {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return new RegExp(`^\\s*${escaped}\\s*=\\s*(['"])([^'"]*)\\1`, "mu").exec(source)?.[2] ?? null;
+  return (
+    new RegExp(`^\\s*${escaped}\\s*=\\s*(['"])([^'"]*)\\1\\s*(?:#.*)?$`, "mu").exec(source)?.[2] ??
+    null
+  );
+}
+
+function pythonStringLiteralExpression(expression: string): string | undefined {
+  return /^(['"])([^'"]*)\1$/u.exec(expression.trim())?.[2];
 }
 
 function isInsidePythonString(source: string, offset: number): boolean {

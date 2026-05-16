@@ -57,6 +57,7 @@ const componentRoots = ["src/pages", "src/components"];
 const testRoots = ["src", "test", "tests", "__tests__", "e2e"];
 
 export async function reactSeeds(root: string): Promise<FeatureSeed[]> {
+  syncFileCache.clear();
   const packages = await discoverReactPackages(root);
   const seeds: FeatureSeed[] = [];
   for (const info of packages) {

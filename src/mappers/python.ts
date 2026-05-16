@@ -815,11 +815,13 @@ function resolvePythonModuleFile(
       return candidate;
     }
   }
-  for (const candidate of candidates) {
-    const suffix = `/${candidate}`;
-    const match = [...sourceFiles].find((file) => file.endsWith(suffix));
-    if (match !== undefined) {
-      return match;
+  if (moduleName.includes(".")) {
+    for (const candidate of candidates) {
+      const suffix = `/${candidate}`;
+      const match = [...sourceFiles].find((file) => file.endsWith(suffix));
+      if (match !== undefined) {
+        return match;
+      }
     }
   }
   return null;

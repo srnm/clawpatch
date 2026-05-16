@@ -2248,6 +2248,50 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).not.toContain("FastAPI route GET /v1/stats");
   });
 
+  it("applies FastAPI prefixes to aliased routers in multi-router modules", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-aliased-router-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.routes import api as users_api",
+        "app = FastAPI()",
+        'app.include_router(users_api, prefix="/users")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes.py",
+      [
+        "from fastapi import APIRouter",
+        "api = APIRouter()",
+        "admin = APIRouter()",
+        '@api.get("/me")',
+        "def me():",
+        "    return []",
+        '@admin.get("/stats")',
+        "def stats():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /users/me");
+    expect(titles).toContain("FastAPI route GET /stats");
+    expect(titles).not.toContain("FastAPI route GET /me");
+    expect(titles).not.toContain("FastAPI route GET /users/stats");
+  });
+
   it("applies FastAPI prefixes through package router re-exports", async () => {
     const root = await fixtureRoot("clawpatch-fastapi-router-reexport-");
     await writeFixture(
@@ -2285,6 +2329,45 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
 
     expect(titles).toContain("FastAPI route GET /api/v1/users");
     expect(titles).not.toContain("FastAPI route GET /v1/users");
+  });
+
+  it("prefers FastAPI router submodules over package files for router imports", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-router-submodule-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(root, "backend/routes/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.routes import router",
+        "app = FastAPI()",
+        'app.include_router(router.router, prefix="/api")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes/router.py",
+      [
+        "from fastapi import APIRouter",
+        "router = APIRouter()",
+        '@router.get("/users")',
+        "def users():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /api/users");
+    expect(titles).not.toContain("FastAPI route GET /users");
   });
 
   it("resolves FastAPI *_router imports as modules before router objects", async () => {

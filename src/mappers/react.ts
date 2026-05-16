@@ -43,7 +43,6 @@ type RouteDeclaration = {
 
 const routePathPropRe = /\bpath=(["'])(.*?)\1/su;
 const routeIndexPropRe = /\bindex(?:\s*=\s*\{?true\}?)?/su;
-const routeElementPropRe = /\belement=\{\s*<([A-Z][A-Za-z0-9_]*)/su;
 const lazyImportRe =
   /const\s+([A-Z][A-Za-z0-9_]*)\s*=\s*(?:React\.)?lazy\(\s*\(\)\s*=>\s*import\(\s*["']([^"']+)["']\s*\)\s*\)/gu;
 const defaultImportRe =
@@ -509,13 +508,24 @@ function routeDeclarations(source: string): RouteDeclaration[] {
           : parentPath
         : joinReactRoutePaths(parentPath, declaredPath);
     if (declaredPath !== undefined || isIndexRoute) {
-      routes.push({ path, component: routeElementPropRe.exec(tag.props)?.[1] ?? null });
+      routes.push({ path, component: routeElementComponent(tag.props) });
     }
     if (!tag.selfClosing) {
       pathStack.push(path);
     }
   }
   return routes;
+}
+
+function routeElementComponent(props: string): string | null {
+  const element = /\belement=\{([\s\S]*)\}/u.exec(props)?.[1];
+  if (element === undefined) {
+    return null;
+  }
+  const components = [...element.matchAll(/<([A-Z][A-Za-z0-9_]*)(?=[\s/>])/gu)]
+    .map((match) => match[1])
+    .filter((component): component is string => component !== undefined);
+  return components.at(-1) ?? null;
 }
 
 function stripJsxComments(source: string): string {

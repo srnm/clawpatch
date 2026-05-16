@@ -355,9 +355,12 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
         const parentPrefixes =
           include.receiver === "app"
             ? [""]
-            : (mounts?.get(include.receiver) ?? prefixes.get(file) ?? [""]).map((prefix) =>
+            : (mounts?.get(include.receiver) ?? prefixes.get(file))?.map((prefix) =>
                 joinRoutePaths(prefix, receiverRouterPrefix),
               );
+        if (parentPrefixes === undefined) {
+          continue;
+        }
         for (const parentPrefix of parentPrefixes) {
           const fullPrefix = joinRoutePaths(parentPrefix, include.prefix);
           if (!include.target.includes(".") && mounts !== undefined) {

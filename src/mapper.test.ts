@@ -534,7 +534,7 @@ describe("mapFeatures", () => {
     expect(reactLazy?.entrypoints[0]?.path).toBe("frontend/src/pages/ReactLazyPage.tsx");
     expect(reports?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
-    expect(suspense?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
+    expect(suspense?.entrypoints[0]?.path).toBe("frontend/src/pages/SuspensePage.tsx");
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
     expect(linked?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
     expect(escape?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
@@ -1527,6 +1527,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).toContain("FastAPI route GET /ready");
     expect(titles).toContain("FastAPI route GET /v1/status");
     expect(titles).toContain("FastAPI route GET /nested/api/users/{user_id}");
+    expect(titles).not.toContain("FastAPI route GET /api/users/{user_id}");
   });
 
   it("does not map Flask decorators as FastAPI routes", async () => {

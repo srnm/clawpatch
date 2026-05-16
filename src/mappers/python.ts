@@ -564,7 +564,7 @@ function includeRouterPrefix(args: string, source: string): string | null {
   if (literal !== undefined) {
     return literal;
   }
-  const constant = /^([A-Za-z_][A-Za-z0-9_]*)\b/u.exec(expression)?.[1];
+  const constant = /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(expression)?.[1];
   return constant === undefined ? null : pythonStringConstant(source, constant);
 }
 

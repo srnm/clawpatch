@@ -237,8 +237,17 @@ async function workspacePatterns(root: string, pkg: NodePackageJson | null): Pro
       patterns.add(pattern);
     }
   }
-  for (const fallback of ["packages/*", "apps/*", "extensions/*", "plugins/*"]) {
-    if (await pathExists(join(root, fallback.slice(0, -2)))) {
+  for (const fallback of [
+    "frontend",
+    "client",
+    "web",
+    "ui",
+    "packages/*",
+    "apps/*",
+    "extensions/*",
+    "plugins/*",
+  ]) {
+    if (await pathExists(join(root, fallback.replace(/\/\*$/u, "")))) {
       patterns.add(fallback);
     }
   }

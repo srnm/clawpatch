@@ -47,7 +47,10 @@ validation commands and records a patch attempt under `.clawpatch/`.
 - npm package bins
 - selected package scripts: `start`, `build`, `test`, `lint`, `typecheck`,
   `format`
+- Node/TypeScript workspace packages and common nested frontend packages
+- bounded Node/TypeScript source groups
 - Next.js `app/` and `pages/` routes
+- React Router routes and React components
 - Go package slices from `go list ./...`, including command packages
 - Go package tests and same-repo imports as review context
 - Rust `src/main.rs`, `src/bin/*.rs`, `src/lib.rs`, `crates/*`, and

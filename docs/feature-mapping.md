@@ -31,6 +31,9 @@ Supported deterministic mappers today:
 - Node/TypeScript workspace packages from `package.json` workspaces, `pnpm-workspace.yaml`, and common package folders
 - bounded Node/TypeScript source groups under `src/`, `lib/`, `app/`, `pages/`, and `scripts/`
 - Next.js `app/` and `pages/` routes
+- React Router `<Route path element>` declarations and React components in
+  root or nested frontend packages such as `frontend/`, `client/`, `web/`,
+  workspaces, and packages under `apps/` or `packages/`
 - Go `cmd/*/main.go`
 - Go `internal/*` packages
 - Python project metadata, console scripts, bounded source groups, and pytest suites
@@ -48,6 +51,12 @@ For large Node/TypeScript repositories, source groups are recursively split by
 directory and then chunked so one feature owns at most a small bounded set of
 files. Package-local tests and package context files are attached when they can
 be found cheaply.
+
+React mapping discovers packages with a React dependency, including common
+nested frontend directories. It maps React Router route declarations to the
+component they render when the component can be resolved from a local import or
+lazy import, and also maps page/component files under `src/pages` and
+`src/components` as UI-flow slices.
 
 Native app mappers use the same bounded grouping model. SwiftPM packages can be
 discovered below the repo root, Apple projects are grouped by Swift source area,

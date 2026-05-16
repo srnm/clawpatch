@@ -373,6 +373,92 @@ describe("mapFeatures", () => {
     ]);
   });
 
+  it("maps React Router routes and components in a nested frontend app", async () => {
+    const root = await fixtureRoot("clawpatch-react-router-map-");
+    await writeFixture(
+      root,
+      "frontend/package.json",
+      JSON.stringify(
+        {
+          name: "fixture-frontend",
+          scripts: { test: "vitest run" },
+          dependencies: {
+            react: "1.0.0",
+            "react-dom": "1.0.0",
+            "react-router-dom": "1.0.0",
+          },
+          devDependencies: { vite: "1.0.0" },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "frontend/src/App.tsx",
+      [
+        "import { lazy } from 'react';",
+        "import { Navigate, Route, Routes } from 'react-router-dom';",
+        "const CasesPage = lazy(() => import('./pages/CasesPage'));",
+        "import SettingsPage from './pages/SettingsPage';",
+        "export default function App() {",
+        "  return <Routes>",
+        '    <Route path="/" element={<Navigate to="/cases" replace />} />',
+        '    <Route path="/cases" element={<CasesPage />} />',
+        '    <Route path="/settings" element={<SettingsPage />} />',
+        "  </Routes>;",
+        "}",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "frontend/src/pages/CasesPage.tsx",
+      "export default function CasesPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "frontend/src/pages/CasesPage.test.tsx",
+      "test('cases page', () => {});\n",
+    );
+    await writeFixture(
+      root,
+      "frontend/src/pages/SettingsPage.tsx",
+      "export default function SettingsPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "frontend/src/components/Dialog.tsx",
+      "export default function Dialog() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+    const cases = result.features.find((feature) => feature.title === "React route /cases");
+    const settings = result.features.find((feature) => feature.title === "React route /settings");
+    const dialog = result.features.find((feature) => feature.title === "React component Dialog");
+
+    expect(titles).toContain("Node package fixture-frontend");
+    expect(titles).not.toContain("React route /");
+    expect(cases?.source).toBe("react-router-route");
+    expect(cases?.entrypoints[0]?.path).toBe("frontend/src/pages/CasesPage.tsx");
+    expect(cases?.contextFiles).toContainEqual({
+      path: "frontend/src/App.tsx",
+      reason: "route declaration",
+    });
+    expect(cases?.tests).toEqual([
+      {
+        path: "frontend/src/pages/CasesPage.test.tsx",
+        command: "npm --prefix frontend run test",
+      },
+    ]);
+    expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
+    expect(dialog?.source).toBe("react-component");
+    expect(dialog?.ownedFiles).toEqual([
+      { path: "frontend/src/components/Dialog.tsx", reason: "component implementation" },
+    ]);
+  });
+
   it("maps nested SwiftPM, Apple, and Android Gradle app surfaces", async () => {
     const root = await fixtureRoot("clawpatch-native-app-map-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "native-root" }, null, 2));

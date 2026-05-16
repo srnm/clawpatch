@@ -2292,6 +2292,45 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).not.toContain("FastAPI route GET /users");
   });
 
+  it("resolves annotated FastAPI include prefix constants", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-annotated-prefix-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.users import router",
+        'API_PREFIX: str = "/api"',
+        "app = FastAPI()",
+        "app.include_router(router, prefix=API_PREFIX)",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/users.py",
+      [
+        "from fastapi import APIRouter",
+        "router = APIRouter()",
+        '@router.get("/users")',
+        "def users():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /api/users");
+    expect(titles).not.toContain("FastAPI route GET /users");
+  });
+
   it("maps root FastAPI apps with sibling router modules", async () => {
     const root = await fixtureRoot("clawpatch-fastapi-root-sibling-router-");
     await writeFixture(
@@ -2404,6 +2443,35 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
 
     expect(titles).toContain("FastAPI route GET /api/users");
     expect(titles).not.toContain("FastAPI route GET /wrong/users");
+  });
+
+  it("reads FastAPI route keyword paths only from top-level arguments", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-top-level-route-path-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(
+      root,
+      "main.py",
+      [
+        "from fastapi import Depends, FastAPI",
+        "app = FastAPI()",
+        "def dep(path: str):",
+        "    return path",
+        '@app.get(dependencies=[Depends(dep(path="/wrong"))], path="/right")',
+        "def route():",
+        "    return {}",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /right");
+    expect(titles).not.toContain("FastAPI route GET /wrong");
   });
 
   it("does not map FastAPI routes through unresolved include prefix expressions", async () => {

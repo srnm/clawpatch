@@ -361,11 +361,16 @@ function fastApiDecorators(
 }
 
 function fastApiPathArg(args: string): string | undefined {
-  const positional = /^\s*(["'])([^"']*)\1/u.exec(args)?.[2];
+  const positionalExpression = firstTopLevelArg(args);
+  const positional =
+    positionalExpression === undefined
+      ? undefined
+      : pythonStringLiteralExpression(positionalExpression);
   if (positional !== undefined) {
     return positional;
   }
-  return /\bpath\s*=\s*(["'])([^"']*)\1/u.exec(args)?.[2];
+  const pathExpression = topLevelKeywordValue(args, "path");
+  return pathExpression === undefined ? undefined : pythonStringLiteralExpression(pathExpression);
 }
 
 function nextFunctionName(lines: string[], start: number): string | null {
@@ -615,8 +620,10 @@ function includeRouterPrefix(args: string, source: string): string | null {
 function pythonStringConstant(source: string, name: string): string | null {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return (
-    new RegExp(`^\\s*${escaped}\\s*=\\s*(['"])([^'"]*)\\1\\s*(?:#.*)?$`, "mu").exec(source)?.[2] ??
-    null
+    new RegExp(
+      `^\\s*${escaped}(?:\\s*:\\s*[^=\\n]+)?\\s*=\\s*(['"])([^'"]*)\\1\\s*(?:#.*)?$`,
+      "mu",
+    ).exec(source)?.[2] ?? null
   );
 }
 

@@ -378,7 +378,12 @@ function routeDeclarations(source: string): RouteDeclaration[] {
 }
 
 function stripJsxComments(source: string): string {
-  return source.replace(/\{\/\*[\s\S]*?\*\/\}/gu, "").replace(/\/\*[\s\S]*?\*\//gu, "");
+  return source
+    .split("\n")
+    .map((line) => (/^\s*\/\//u.test(line) ? "" : line))
+    .join("\n")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/gu, "")
+    .replace(/\/\*[\s\S]*?\*\//gu, "");
 }
 
 function readRouteTag(

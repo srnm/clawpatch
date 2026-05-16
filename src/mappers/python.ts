@@ -350,6 +350,11 @@ function routePrefixes(sources: Map<string, string>): FastApiPrefixInfo {
         const moduleFile = aliases.get(include.target.split(".")[0] ?? "");
         if (moduleFile !== undefined) {
           changed = setMapValue(prefixes, moduleFile, fullPrefix) || changed;
+          const moduleMounts = routerMountPrefixesByFile.get(moduleFile);
+          const targetRouter = include.target.split(".")[0];
+          if (moduleMounts !== undefined && targetRouter !== undefined) {
+            changed = setMapValue(moduleMounts, targetRouter, fullPrefix) || changed;
+          }
         }
       }
     }

@@ -410,6 +410,7 @@ describe("mapFeatures", () => {
         "export default function App() {",
         "  return <Routes>",
         '    {/* <Route path="/old" element={<OldPage />} /> */}',
+        '    // <Route path="/line-old" element={<OldPage />} />',
         "    <Route index element={<HomePage />} />",
         '    <Route path="/" element={<Navigate to="/cases" replace />} />',
         '    <Route path="/cases" element={<CasesPage />} />',
@@ -514,6 +515,7 @@ describe("mapFeatures", () => {
     expect(user?.entrypoints[0]?.path).toBe("frontend/src/pages/UserPage.tsx");
     expect(escape?.entrypoints[0]?.path).toBe("frontend/src/App.tsx");
     expect(titles).not.toContain("React route /old");
+    expect(titles).not.toContain("React route /line-old");
     expect(titles).not.toContain("React route /test-only");
     expect(dialog?.source).toBe("react-component");
     expect(dialog?.ownedFiles).toEqual([
@@ -1496,6 +1498,52 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
 
     expect(titles).toContain("FastAPI route GET /health");
     expect(titles).not.toContain("FastAPI route GET /shared/health");
+  });
+
+  it("keeps FastAPI prefixes separate for multiple routers in one module", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-multi-router-module-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(root, "backend/routes/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.routes.routers import admin_router, public_router",
+        "app = FastAPI()",
+        'app.include_router(public_router, prefix="/public")',
+        'app.include_router(admin_router, prefix="/admin")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes/routers.py",
+      [
+        "from fastapi import APIRouter",
+        "public_router = APIRouter()",
+        "admin_router = APIRouter()",
+        '@public_router.get("/users")',
+        "def users():",
+        "    return []",
+        '@admin_router.get("/stats")',
+        "def stats():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /public/users");
+    expect(titles).toContain("FastAPI route GET /admin/stats");
+    expect(titles).not.toContain("FastAPI route GET /admin/users");
+    expect(titles).not.toContain("FastAPI route GET /public/stats");
   });
 
   it("resolves Python console scripts and tests from non-src package roots", async () => {

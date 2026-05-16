@@ -132,6 +132,12 @@ const kotlinRoleDefinitions = {
     tags: ["kotlin", "server", "external-api"],
     trustBoundaries: ["network", "external-api", "serialization"],
   },
+  "server-configuration": {
+    title: "configuration",
+    kind: "config",
+    tags: ["kotlin", "server", "config"],
+    trustBoundaries: ["filesystem"],
+  },
   "server-framework-component": {
     title: "framework component",
     kind: "library",
@@ -287,9 +293,7 @@ async function kotlinRoleSeeds(
     const source = await readFile(join(root, filePath), "utf8");
     kotlinFiles.push({ filePath, info: parseKotlinFile(source) });
   }
-  const projectPackages = new Set(
-    kotlinFiles.flatMap(({ info }) => (info.packageName === null ? [] : [info.packageName])),
-  );
+  const projectPackages = await gradleProjectPackages(root, sourceFiles, kotlinFiles);
 
   for (const { filePath, info } of kotlinFiles) {
     const frameworkEvidence = kotlinFrameworkRoleEvidence(info, tags, projectPackages);
@@ -352,45 +356,24 @@ function kotlinRoleGroups(
   label: string;
   symbol: string;
 }> {
-  const groups = kotlinFilesByConfidence(byFile).flatMap(([confidence, files]) =>
-    partitionFileGroups(sourceRoot, files, maxOwnedFiles).map((group) => ({
+  return partitionFileGroups(sourceRoot, [...byFile.keys()], maxOwnedFiles).map((group) => {
+    const confidence = kotlinGroupConfidence(group.files, byFile);
+    return {
       confidence,
       group,
-      label: `${group.label} (${confidence})`,
+      label: group.label,
       symbol: group.label,
-    })),
-  );
-  const symbolCounts = new Map<string, number>();
-  for (const group of groups) {
-    symbolCounts.set(group.symbol, (symbolCounts.get(group.symbol) ?? 0) + 1);
-  }
-  return groups.map((group) => ({
-    ...group,
-    symbol:
-      (symbolCounts.get(group.symbol) ?? 0) > 1
-        ? `${group.symbol} (${group.confidence})`
-        : group.symbol,
-  }));
+    };
+  });
 }
 
-function kotlinFilesByConfidence(
+function kotlinGroupConfidence(
+  files: string[],
   byFile: Map<string, Array<{ reason: string; confidence: FeatureSeed["confidence"] }>>,
-): Array<[FeatureSeed["confidence"], string[]]> {
-  const buckets = new Map<FeatureSeed["confidence"], string[]>();
-  for (const [path, evidence] of byFile) {
-    const confidence = evidence.some((item) => item.confidence === "high") ? "high" : "medium";
-    const files = buckets.get(confidence) ?? [];
-    files.push(path);
-    buckets.set(confidence, files);
-  }
-  const order = new Map<FeatureSeed["confidence"], number>([
-    ["high", 0],
-    ["medium", 1],
-    ["low", 2],
-  ]);
-  return [...buckets.entries()].toSorted(
-    ([left], [right]) => (order.get(left) ?? 99) - (order.get(right) ?? 99),
-  );
+): FeatureSeed["confidence"] {
+  return files.some((path) => (byFile.get(path) ?? []).some((item) => item.confidence === "high"))
+    ? "high"
+    : "medium";
 }
 
 function kotlinRoleSource(role: KotlinRoleKey): string {
@@ -398,6 +381,24 @@ function kotlinRoleSource(role: KotlinRoleKey): string {
     return `kotlin-android-role-${role.slice("android-".length)}`;
   }
   return `kotlin-server-role-${role.slice("server-".length)}`;
+}
+
+async function gradleProjectPackages(
+  root: string,
+  sourceFiles: string[],
+  kotlinFiles: Array<{ filePath: string; info: KotlinFileInfo }>,
+): Promise<Set<string>> {
+  const packages = new Set(
+    kotlinFiles.flatMap(({ info }) => (info.packageName === null ? [] : [info.packageName])),
+  );
+  for (const filePath of sourceFiles.filter((file) => file.endsWith(".java"))) {
+    const source = await readFile(join(root, filePath), "utf8");
+    const packageName = parseJavaFile(source).packageName;
+    if (packageName !== null) {
+      packages.add(packageName);
+    }
+  }
+  return packages;
 }
 
 async function jvmRoleSeeds(
@@ -557,6 +558,13 @@ function kotlinFrameworkRoleEvidence(
       evidence.push({
         role: "server-persistence-boundary",
         reason: `persistence annotation @${annotation}`,
+        confidence: "high",
+      });
+    }
+    if (!isAndroid && ["Configuration", "Bean", "ConfigurationProperties"].includes(annotation)) {
+      evidence.push({
+        role: "server-configuration",
+        reason: `configuration annotation @${annotation}`,
         confidence: "high",
       });
     }

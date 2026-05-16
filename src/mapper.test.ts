@@ -2628,6 +2628,22 @@ describe("mapFeatures", () => {
     );
     await writeFixture(
       root,
+      "src/main/kotlin/com/example/config/AppConfig.kt",
+      [
+        "package com.example.config",
+        "",
+        "import org.springframework.context.annotation.Bean",
+        "import org.springframework.context.annotation.Configuration",
+        "",
+        "@Configuration",
+        "class AppConfig {",
+        '  @Bean fun appName(): String = "orders"',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
       "src/main/kotlin/com/example/network/FallbackClient.kt",
       "package com.example.network\nclass FallbackClient\n",
     );
@@ -2648,6 +2664,9 @@ describe("mapFeatures", () => {
     const persistence = result.features.find((feature) =>
       feature.title.startsWith("Kotlin server role persistence boundary "),
     );
+    const config = result.features.find((feature) =>
+      feature.title.startsWith("Kotlin server role configuration "),
+    );
     const clientFeatures = result.features.filter((feature) =>
       feature.title.startsWith("Kotlin server role external client "),
     );
@@ -2658,8 +2677,19 @@ describe("mapFeatures", () => {
     ]);
     expect(service?.source).toBe("kotlin-server-role-application-service");
     expect(persistence?.source).toBe("kotlin-server-role-persistence-boundary");
+    expect(config?.source).toBe("kotlin-server-role-configuration");
+    expect(config?.ownedFiles.map((file) => file.path)).toContain(
+      "src/main/kotlin/com/example/config/AppConfig.kt",
+    );
     expect(clientFeatures.some((feature) => feature.confidence === "high")).toBe(true);
-    expect(clientFeatures.some((feature) => feature.confidence === "medium")).toBe(true);
+    expect(
+      clientFeatures.flatMap((feature) => feature.ownedFiles.map((file) => file.path)),
+    ).toEqual(
+      expect.arrayContaining([
+        "src/main/kotlin/com/example/client/RemoteClient.kt",
+        "src/main/kotlin/com/example/network/FallbackClient.kt",
+      ]),
+    );
   });
 
   it("keeps Kotlin feature IDs stable when confidence changes", async () => {
@@ -2707,6 +2737,104 @@ describe("mapFeatures", () => {
     expect(fallbackBefore?.confidence).toBe("medium");
     expect(fallbackAfter?.confidence).toBe("high");
     expect(fallbackAfter?.featureId).toBe(fallbackBefore?.featureId);
+  });
+
+  it("keeps Kotlin role IDs stable when confidence buckets merge", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-role-bucket-stability-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/network/RemoteClient.kt",
+      [
+        "package com.example.network",
+        "",
+        "import okhttp3.OkHttpClient",
+        "",
+        "class RemoteClient(private val client: OkHttpClient)",
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/network/FallbackClient.kt",
+      "package com.example.network\nclass FallbackClient\n",
+    );
+
+    const project = await detectProject(root);
+    const first = await mapFeatures(root, project, []);
+    const before = first.features.find(
+      (feature) =>
+        feature.source === "kotlin-server-role-external-client" &&
+        feature.ownedFiles.some(
+          (file) => file.path === "src/main/kotlin/com/example/network/RemoteClient.kt",
+        ),
+    );
+
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/network/FallbackClient.kt",
+      [
+        "package com.example.network",
+        "",
+        "import retrofit2.Retrofit",
+        "",
+        "class FallbackClient(private val retrofit: Retrofit)",
+        "",
+      ].join("\n"),
+    );
+
+    const second = await mapFeatures(root, project, first.features);
+    const after = second.features.find(
+      (feature) =>
+        feature.source === "kotlin-server-role-external-client" &&
+        feature.ownedFiles.some(
+          (file) => file.path === "src/main/kotlin/com/example/network/RemoteClient.kt",
+        ),
+    );
+
+    expect(before?.featureId).toBeDefined();
+    expect(after?.featureId).toBe(before?.featureId);
+    expect(after?.ownedFiles.map((file) => file.path).toSorted()).toEqual([
+      "src/main/kotlin/com/example/network/FallbackClient.kt",
+      "src/main/kotlin/com/example/network/RemoteClient.kt",
+    ]);
+  });
+
+  it("does not treat Java sources from the same Gradle module as external Kotlin framework types", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-java-local-type-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/java/com/example/core/BaseService.java",
+      "package com.example.core;\npublic class BaseService {}\n",
+    );
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/app/LocalService.kt",
+      [
+        "package com.example.app",
+        "",
+        "import com.example.core.BaseService",
+        "",
+        "class LocalService : BaseService()",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/app/LocalService.kt",
+          ),
+      ),
+    ).toBe(false);
   });
 
   it("does not infer Android roles from non-Android Gradle module paths", async () => {

@@ -449,7 +449,9 @@ describe("mapFeatures", () => {
 
   it("keeps test-prefixed Ruby sources under lib reviewable", async () => {
     const root = await fixtureRoot("clawpatch-map-ruby-test-prefixed-source-");
+    await writeFixture(root, "Gemfile", "source 'https://rubygems.org'\n");
     await writeFixture(root, "lib/test_client.rb", "module TestClient\nend\n");
+    await writeFixture(root, "test/test_client_test.rb", "require 'minitest/autorun'\n");
 
     const project = await detectProject(root);
     const result = await mapFeatures(root, project, []);
@@ -457,6 +459,9 @@ describe("mapFeatures", () => {
 
     expect(project.detected.languages).toContain("ruby");
     expect(source?.ownedFiles.map((ref) => ref.path)).toContain("lib/test_client.rb");
+    expect(source?.tests).toEqual([
+      { path: "test/test_client_test.rb", command: "bundle exec rake test" },
+    ]);
   });
 
   it("maps scripts directory Ruby files as source only", async () => {

@@ -901,15 +901,25 @@ function associatedTests(
   const dirs = new Set(files.map((file) => dirname(file)));
   return tests
     .filter((test) => {
-      const testStem = basename(test)
-        .replace(/_spec\.rb$/u, "")
-        .replace(/_test\.rb$/u, "")
-        .replace(/\.rb$/u, "")
-        .replace(/^test_/u, "");
+      const testStem = rubyTestStem(test);
       return [...dirs].some((dir) => pathMatchesPrefix(test, dir)) || fileStems.has(testStem);
     })
     .slice(0, sourceGroupMaxTests)
     .map((path) => ({ path, command: commandForTest(path) }));
+}
+
+function rubyTestStem(path: string): string {
+  const name = basename(path);
+  if (name.endsWith("_spec.rb")) {
+    return name.replace(/_spec\.rb$/u, "");
+  }
+  if (name.endsWith("_test.rb")) {
+    return name.replace(/_test\.rb$/u, "");
+  }
+  if (/^test_.+\.rb$/u.test(name)) {
+    return name.replace(/^test_/u, "").replace(/\.rb$/u, "");
+  }
+  return name.replace(/\.rb$/u, "");
 }
 
 function isReviewableRubySourceFile(path: string): boolean {

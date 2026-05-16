@@ -401,11 +401,13 @@ describe("mapFeatures", () => {
         "import { lazy } from 'react';",
         "import { Navigate, Route, Routes } from 'react-router-dom';",
         "const CasesPage = lazy(() => import('./pages/CasesPage'));",
+        "import ReportsPage from './pages/ReportsPage';",
         "import SettingsPage from './pages/SettingsPage';",
         "export default function App() {",
         "  return <Routes>",
         '    <Route path="/" element={<Navigate to="/cases" replace />} />',
         '    <Route path="/cases" element={<CasesPage />} />',
+        '    <Route element={<ReportsPage />} path="/reports" />',
         '    <Route path="/settings" element={<SettingsPage />} />',
         "  </Routes>;",
         "}",
@@ -428,6 +430,11 @@ describe("mapFeatures", () => {
     );
     await writeFixture(
       root,
+      "frontend/src/pages/ReportsPage.tsx",
+      "export default function ReportsPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
       "frontend/src/components/Dialog.tsx",
       "export default function Dialog() { return null; }\n",
     );
@@ -436,6 +443,7 @@ describe("mapFeatures", () => {
     const result = await mapFeatures(root, project, []);
     const titles = result.features.map((feature) => feature.title);
     const cases = result.features.find((feature) => feature.title === "React route /cases");
+    const reports = result.features.find((feature) => feature.title === "React route /reports");
     const settings = result.features.find((feature) => feature.title === "React route /settings");
     const dialog = result.features.find((feature) => feature.title === "React component Dialog");
 
@@ -453,6 +461,7 @@ describe("mapFeatures", () => {
         command: "pnpm --dir frontend test",
       },
     ]);
+    expect(reports?.entrypoints[0]?.path).toBe("frontend/src/pages/ReportsPage.tsx");
     expect(settings?.entrypoints[0]?.path).toBe("frontend/src/pages/SettingsPage.tsx");
     expect(dialog?.source).toBe("react-component");
     expect(dialog?.ownedFiles).toEqual([
@@ -1060,9 +1069,11 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       [
         "from fastapi import FastAPI",
         "from backend.routes.auth_routes import router as auth_router",
-        "from backend.routes.router import api_router",
+        "from backend.routes.health_routes import router as health_router",
+        "from backend.api import api_router",
         "app = FastAPI()",
         'app.include_router(auth_router, prefix="/api/v1/auth")',
+        "app.include_router(health_router)",
         'app.include_router(api_router, prefix="/api/v1")',
         '@app.get("/health")',
         "def health():",
@@ -1071,7 +1082,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     );
     await writeFixture(
       root,
-      "backend/routes/router.py",
+      "backend/api.py",
       [
         "from fastapi import APIRouter",
         "from backend.routes import (",
@@ -1079,6 +1090,17 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
         ")",
         "api_router = APIRouter()",
         'api_router.include_router(case_routes.router, prefix="/cases")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes/health_routes.py",
+      [
+        "from fastapi import APIRouter",
+        "router = APIRouter()",
+        '@router.get("/ready")',
+        "def ready():",
+        "    return {'ok': True}",
       ].join("\n"),
     );
     await writeFixture(
@@ -1113,6 +1135,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     );
 
     expect(titles).toContain("FastAPI route GET /health");
+    expect(titles).toContain("FastAPI route GET /ready");
     expect(titles).toContain("FastAPI route POST /api/v1/auth/login");
     expect(caseRoute?.source).toBe("fastapi-route");
     expect(caseRoute?.entrypoints[0]).toMatchObject({
@@ -1121,6 +1144,31 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
       route: "GET /api/v1/cases/{case_id}",
     });
     expect(caseRoute?.tests).toEqual([{ path: "tests/test_case_routes.py", command: "pytest" }]);
+  });
+
+  it("maps root-level FastAPI app modules", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-root-map-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "fastapi-root"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(
+      root,
+      "main.py",
+      [
+        "from fastapi import FastAPI",
+        "app = FastAPI()",
+        '@app.get("/health")',
+        "def health():",
+        "    return {'ok': True}",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("FastAPI route GET /health");
   });
 
   it("resolves Python console scripts and tests from non-src package roots", async () => {

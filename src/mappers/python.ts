@@ -182,11 +182,24 @@ async function fastApiRouteSeeds(
 }
 
 async function pythonSourceFiles(root: string): Promise<string[]> {
-  const files = [];
+  const files: string[] = [];
+  for (const file of await rootPythonAppFiles(root)) {
+    files.push(file);
+  }
   for (const sourceRoot of await pythonSourceRoots(root)) {
     files.push(...(await walk(root, [sourceRoot])).filter(isReviewablePythonSourceFile));
   }
   return uniquePaths(files);
+}
+
+async function rootPythonAppFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const file of ["app.py", "main.py"]) {
+    if ((await isSafeFile(root, join(root, file))) && isReviewablePythonSourceFile(file)) {
+      files.push(file);
+    }
+  }
+  return files;
 }
 
 function fastApiRoutesInFile(file: string, source: string, prefix: string): FastApiRoute[] {
@@ -237,19 +250,13 @@ function nextFunctionName(lines: string[], start: number): string | null {
 
 function routePrefixes(root: string, sources: Map<string, string>): Map<string, string> {
   const exportedRouterPrefixes = new Map<string, string>();
-  const directRouterPrefixes = new Map<string, string>();
-  for (const [file, source] of sources) {
-    const aliases = pythonImportAliases(file, source);
+  for (const source of sources.values()) {
     for (const include of includeRouterCalls(source)) {
       const parentPrefix =
         include.receiver === "app" ? "" : (exportedRouterPrefixes.get(include.receiver) ?? "");
       const fullPrefix = joinRoutePaths(parentPrefix, include.prefix);
       if (!include.target.includes(".")) {
         exportedRouterPrefixes.set(include.target, fullPrefix);
-      }
-      const moduleFile = aliases.get(include.target.split(".")[0] ?? "");
-      if (moduleFile !== undefined) {
-        directRouterPrefixes.set(moduleFile, fullPrefix);
       }
     }
   }
@@ -266,9 +273,6 @@ function routePrefixes(root: string, sources: Map<string, string>): Map<string, 
       }
     }
   }
-  for (const [file, prefix] of directRouterPrefixes) {
-    prefixes.set(file, prefix);
-  }
   for (const file of sources.keys()) {
     if (!prefixes.has(file) && /(^|\/)routes\/[^/]+\.py$/u.test(file)) {
       prefixes.set(file, inferredRoutePrefix(file));
@@ -282,10 +286,14 @@ function includeRouterCalls(
 ): Array<{ receiver: string; target: string; prefix: string }> {
   const calls: Array<{ receiver: string; target: string; prefix: string }> = [];
   for (const match of source.matchAll(
-    /([A-Za-z_][A-Za-z0-9_]*)\.include_router\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.router)?)\s*,[^)]*?\bprefix\s*=\s*(["'])([^"']*)\3/gsu,
+    /([A-Za-z_][A-Za-z0-9_]*)\.include_router\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.router)?)([\s\S]*?)\)/gu,
   )) {
-    if (match[1] !== undefined && match[2] !== undefined && match[4] !== undefined) {
-      calls.push({ receiver: match[1], target: match[2], prefix: match[4] });
+    const receiver = match[1];
+    const target = match[2];
+    const rest = match[3] ?? "";
+    const prefixMatch = /\bprefix\s*=\s*(["'])([^"']*)\1/u.exec(rest);
+    if (receiver !== undefined && target !== undefined) {
+      calls.push({ receiver, target, prefix: prefixMatch?.[2] ?? "" });
     }
   }
   return calls;

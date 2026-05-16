@@ -33,8 +33,8 @@ type RouteMatch = {
   declarationPath: string;
 };
 
-const routeExpressionRe =
-  /<Route\s+[^>]*path=(["'])(.*?)\1[^>]*element=\{\s*<([A-Z][A-Za-z0-9_]*)/gsu;
+const routePathPropRe = /\bpath=(["'])(.*?)\1/su;
+const routeElementPropRe = /\belement=\{\s*<([A-Z][A-Za-z0-9_]*)/su;
 const lazyImportRe =
   /const\s+([A-Z][A-Za-z0-9_]*)\s*=\s*lazy\(\s*\(\)\s*=>\s*import\(\s*["']([^"']+)["']\s*\)\s*\)/gu;
 const defaultImportRe = /import\s+([A-Z][A-Za-z0-9_]*)\s+from\s+["']([^"']+)["']/gu;
@@ -228,15 +228,35 @@ async function packageTestFiles(root: string, info: ReactPackage): Promise<strin
 
 function routeMatches(source: string, declarationPath: string): RouteMatch[] {
   const routes: RouteMatch[] = [];
-  for (const match of source.matchAll(routeExpressionRe)) {
-    const path = match[2];
-    const component = match[3];
+  for (const props of routeTagProps(source)) {
+    const path = routePathPropRe.exec(props)?.[2];
+    const component = routeElementPropRe.exec(props)?.[1];
     if (path === undefined || component === undefined) {
       continue;
     }
     routes.push({ path, component, declarationPath });
   }
   return routes;
+}
+
+function routeTagProps(source: string): string[] {
+  const props: string[] = [];
+  for (const match of source.matchAll(/<Route\b/gu)) {
+    const start = match.index + "<Route".length;
+    let braceDepth = 0;
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index];
+      if (char === "{") {
+        braceDepth += 1;
+      } else if (char === "}") {
+        braceDepth = Math.max(0, braceDepth - 1);
+      } else if (char === ">" && braceDepth === 0) {
+        props.push(source.slice(start, index));
+        break;
+      }
+    }
+  }
+  return props;
 }
 
 function componentImports(root: string, fromPath: string, source: string): Map<string, string> {

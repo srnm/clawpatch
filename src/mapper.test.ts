@@ -684,6 +684,7 @@ describe("mapFeatures", () => {
         "import FragmentPage from './pages/FragmentPage';",
         "import SuspensePage from './pages/SuspensePage';",
         "// import FragmentPage from './pages/WrongPage';",
+        "const example = '<Route path=\"/fake\" element={<FragmentPage />} />';",
         "export function App() {",
         "  return <Routes>",
         '    <Route path="/fragment" element={<><FragmentPage /></>} />',
@@ -715,6 +716,7 @@ describe("mapFeatures", () => {
 
     expect(fragment?.entrypoints[0]?.path).toBe("src/pages/FragmentPage.tsx");
     expect(member?.entrypoints[0]?.path).toBe("src/pages/SuspensePage.tsx");
+    expect(result.features.map((feature) => feature.title)).not.toContain("React route /fake");
   });
 
   it("does not discover React packages through symlinked package roots", async () => {
@@ -1802,6 +1804,11 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
         "from fastapi import APIRouter, FastAPI",
         "app = FastAPI()",
         "router = APIRouter()",
+        "example = '''",
+        '@router.get("/fake")',
+        "def fake():",
+        "    return []",
+        "'''",
         "app.include_router(",
         "    router,",
         '    # prefix="/old",',
@@ -1818,6 +1825,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     const titles = result.features.map((feature) => feature.title);
 
     expect(titles).toContain("FastAPI route TRACE /api/trace");
+    expect(titles).not.toContain("FastAPI route GET /api/fake");
     expect(titles).not.toContain("FastAPI route TRACE /old/trace");
   });
 

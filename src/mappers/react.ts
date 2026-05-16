@@ -515,6 +515,9 @@ function routeDeclarations(source: string): RouteDeclaration[] {
   const pathStack: string[] = [];
   const strippedSource = stripJsxComments(source);
   for (const match of strippedSource.matchAll(/<\/Route\s*>|<Route\b/gu)) {
+    if (isInsideJsString(strippedSource, match.index)) {
+      continue;
+    }
     if (match[0].startsWith("</")) {
       pathStack.pop();
       continue;
@@ -858,10 +861,11 @@ function directImportRefs(root: string, path: string): SeedFileRef[] {
   if (!pathExistsSyncMemo(fullPath)) {
     return [];
   }
-  const source = readFileSyncMemo(fullPath);
-  if (source === null) {
+  const rawSource = readFileSyncMemo(fullPath);
+  if (rawSource === null) {
     return [];
   }
+  const source = stripJsxComments(rawSource);
   const refs: SeedFileRef[] = [];
   for (const match of source.matchAll(anyImportRe)) {
     const importPath = match[1];
@@ -874,6 +878,28 @@ function directImportRefs(root: string, path: string): SeedFileRef[] {
     }
   }
   return uniqueFileRefs(refs);
+}
+
+function isInsideJsString(source: string, offset: number): boolean {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = 0; index < offset; index += 1) {
+    const char = source[index];
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+    }
+  }
+  return quote !== null;
 }
 
 const syncFileCache = new Map<string, string | null>();

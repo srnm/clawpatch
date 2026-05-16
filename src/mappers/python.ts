@@ -268,6 +268,9 @@ function apiRouterPrefixes(source: string): Map<string, string> {
   for (const match of source.matchAll(
     /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?APIRouter\(/gmu,
   )) {
+    if (isInsidePythonString(source, match.index)) {
+      continue;
+    }
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
     const args = readPythonCallArgs(source, openParenIndex);
@@ -284,6 +287,9 @@ function fastApiReceivers(source: string): Set<string> {
   for (const match of source.matchAll(
     /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?(?:FastAPI|APIRouter)\(/gmu,
   )) {
+    if (isInsidePythonString(source, match.index)) {
+      continue;
+    }
     const receiver = match[1];
     if (receiver !== undefined) {
       receivers.add(receiver);
@@ -297,6 +303,9 @@ function fastApiAppReceivers(source: string): Set<string> {
   for (const match of source.matchAll(
     /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?FastAPI\(/gmu,
   )) {
+    if (isInsidePythonString(source, match.index)) {
+      continue;
+    }
     const receiver = match[1];
     if (receiver !== undefined) {
       receivers.add(receiver);
@@ -313,6 +322,9 @@ function fastApiDecorators(
   const methods = fastApiMethods.join("|");
   const pattern = new RegExp(`^\\s*@([A-Za-z_][A-Za-z0-9_]*)\\.(${methods})\\(`, "gmu");
   for (const match of source.matchAll(pattern)) {
+    if (isInsidePythonString(source, match.index)) {
+      continue;
+    }
     const receiver = match[1];
     const method = match[2];
     const openParenIndex = match.index + match[0].length - 1;
@@ -481,6 +493,9 @@ function includeRouterCalls(
 ): Array<{ receiver: string; target: string; prefix: string }> {
   const calls: Array<{ receiver: string; target: string; prefix: string }> = [];
   for (const match of source.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\.include_router\(/gmu)) {
+    if (isInsidePythonString(source, match.index)) {
+      continue;
+    }
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
     const args = stripLineComments(readPythonCallArgs(source, openParenIndex), "#");
@@ -491,6 +506,39 @@ function includeRouterCalls(
     }
   }
   return calls;
+}
+
+function isInsidePythonString(source: string, offset: number): boolean {
+  let quote: "'" | '"' | "'''" | '"""' | null = null;
+  let escaped = false;
+  for (let index = 0; index < offset; index += 1) {
+    const char = source[index];
+    if (quote !== null) {
+      if (quote.length === 3) {
+        if (source.slice(index, index + 3) === quote) {
+          quote = null;
+          index += 2;
+        }
+      } else if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (source.slice(index, index + 3) === "'''") {
+      quote = "'''";
+      index += 2;
+    } else if (source.slice(index, index + 3) === '"""') {
+      quote = '"""';
+      index += 2;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    }
+  }
+  return quote !== null;
 }
 
 function includeRouterTarget(args: string): string | undefined {

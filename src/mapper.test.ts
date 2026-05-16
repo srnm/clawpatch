@@ -1363,6 +1363,7 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
         "def auth():",
         "    return True",
         "app = FastAPI()",
+        '# router = fastapi.APIRouter(prefix="/stale")',
         'router: fastapi.APIRouter = fastapi.APIRouter(dependencies=[Depends(auth)], prefix="/v1")',
         'app.include_router(router, prefix="/api")',
         '# app.include_router(router, prefix="/disabled")',
@@ -1386,6 +1387,9 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     );
     expect(result.features.map((feature) => feature.title)).not.toContain(
       "FastAPI route GET /disabled/v1/items",
+    );
+    expect(result.features.map((feature) => feature.title)).not.toContain(
+      "FastAPI route GET /api/stale/items",
     );
   });
 

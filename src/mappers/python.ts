@@ -247,7 +247,7 @@ function fastApiRoutesInFile(
 function apiRouterPrefixes(source: string): Map<string, string> {
   const prefixes = new Map<string, string>();
   for (const match of source.matchAll(
-    /\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?APIRouter\(/gu,
+    /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?APIRouter\(/gmu,
   )) {
     const receiver = match[1];
     const openParenIndex = match.index + match[0].length - 1;
@@ -263,7 +263,7 @@ function apiRouterPrefixes(source: string): Map<string, string> {
 function fastApiReceivers(source: string): Set<string> {
   const receivers = new Set<string>();
   for (const match of source.matchAll(
-    /\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?(?:FastAPI|APIRouter)\(/gu,
+    /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:fastapi\.)?(?:FastAPI|APIRouter)\(/gmu,
   )) {
     const receiver = match[1];
     if (receiver !== undefined) {

@@ -246,7 +246,7 @@ async function workspacePackageJsonPaths(
   excludes: string[],
 ): Promise<string[]> {
   const paths: string[] = [];
-  for (const pattern of patterns.filter((pattern) => !pattern.startsWith("!"))) {
+  for (const pattern of patterns.filter((entry) => !entry.startsWith("!"))) {
     for (const packageRoot of await expandWorkspacePattern(root, pattern)) {
       if (!isExcludedWorkspace(packageRoot, excludes)) {
         paths.push(packageRelativePath(packageRoot, "package.json"));
@@ -359,7 +359,6 @@ function workspacePatternMatches(pattern: string, packageRoot: string): boolean 
 
 async function expandWorkspaceGlob(root: string, pattern: string): Promise<string[]> {
   const packages: string[] = [];
-  const segments = pattern.split("/");
 
   async function visit(base: string, remaining: string[]): Promise<void> {
     const [segment, ...rest] = remaining;

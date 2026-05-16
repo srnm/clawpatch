@@ -193,24 +193,36 @@ async function discoverReactPackages(root: string): Promise<ReactPackage[]> {
 
 async function packageJsonPaths(root: string): Promise<string[]> {
   const paths = new Set<string>();
+  const patterns = await workspacePatterns(root);
+  const excludes = patterns
+    .filter((pattern) => pattern.startsWith("!"))
+    .flatMap((pattern) => {
+      const normalized = normalizeWorkspacePattern(pattern.slice(1));
+      return normalized === null ? [] : [normalized];
+    });
   for (const candidate of packageRootCandidates) {
     const packageJsonPath = candidate === "" ? "package.json" : `${candidate}/package.json`;
-    if (await pathExists(join(root, packageJsonPath))) {
+    if (
+      !isExcludedWorkspace(candidate === "" ? "." : candidate, excludes) &&
+      (await pathExists(join(root, packageJsonPath)))
+    ) {
       paths.add(packageJsonPath);
     }
   }
-  for (const path of (await walk(root, ["apps", "packages", "frontend", "client", "web"])).filter(
-    (file) => file.endsWith("/package.json") && !isSampleProjectPath(file),
-  )) {
-    paths.add(path);
+  if (patterns.length === 0) {
+    for (const path of (await walk(root, ["apps", "packages", "frontend", "client", "web"])).filter(
+      (file) => file.endsWith("/package.json") && !isSampleProjectPath(file),
+    )) {
+      paths.add(path);
+    }
   }
-  for (const path of await workspacePackageJsonPaths(root)) {
+  for (const path of await workspacePackageJsonPaths(root, patterns, excludes)) {
     paths.add(path);
   }
   return [...paths].toSorted();
 }
 
-async function workspacePackageJsonPaths(root: string): Promise<string[]> {
+async function workspacePatterns(root: string): Promise<string[]> {
   const patterns = new Set<string>();
   const rootPackage = await readPackageJsonAt(root, "package.json");
   if (rootPackage !== null) {
@@ -225,10 +237,20 @@ async function workspacePackageJsonPaths(root: string): Promise<string[]> {
       patterns.add(pattern);
     }
   }
+  return [...patterns];
+}
+
+async function workspacePackageJsonPaths(
+  root: string,
+  patterns: string[],
+  excludes: string[],
+): Promise<string[]> {
   const paths: string[] = [];
-  for (const pattern of patterns) {
+  for (const pattern of patterns.filter((pattern) => !pattern.startsWith("!"))) {
     for (const packageRoot of await expandWorkspacePattern(root, pattern)) {
-      paths.push(packageRelativePath(packageRoot, "package.json"));
+      if (!isExcludedWorkspace(packageRoot, excludes)) {
+        paths.push(packageRelativePath(packageRoot, "package.json"));
+      }
     }
   }
   return paths;
@@ -271,14 +293,18 @@ function parsePnpmWorkspace(source: string): string[] {
 }
 
 async function expandWorkspacePattern(root: string, pattern: string): Promise<string[]> {
-  const normalized = normalize(pattern)
-    .replace(/\/package\.json$/u, "")
-    .replace(/\/$/u, "");
-  if (normalized.startsWith("/") || normalized.split("/").includes("..")) {
+  const normalized = normalizeWorkspacePattern(pattern);
+  if (normalized === null) {
     return [];
+  }
+  if (normalized === "." || normalized === "") {
+    return ["."];
   }
   if (normalized.endsWith("/*")) {
     const parent = normalized.slice(0, -2);
+    if (hasWorkspaceGlob(parent)) {
+      return expandWorkspaceGlob(root, normalized);
+    }
     const entries = await readdir(join(root, parent), { withFileTypes: true }).catch(() => []);
     const packageRoots = entries
       .filter((entry) => entry.isDirectory())
@@ -291,10 +317,118 @@ async function expandWorkspacePattern(root: string, pattern: string): Promise<st
     }
     return existing;
   }
-  if (normalized.includes("*")) {
-    return [];
+  if (hasWorkspaceGlob(normalized)) {
+    return expandWorkspaceGlob(root, normalized);
   }
   return (await pathExists(join(root, normalized, "package.json"))) ? [normalized] : [];
+}
+
+function normalizeWorkspacePattern(pattern: string): string | null {
+  const normalized = normalize(pattern)
+    .replace(/\/package\.json$/u, "")
+    .replace(/\/$/u, "");
+  if (normalized.startsWith("/") || normalized.split("/").includes("..")) {
+    return null;
+  }
+  return normalized;
+}
+
+function isExcludedWorkspace(packageRoot: string, excludes: string[]): boolean {
+  return excludes.some((pattern) => workspacePatternMatches(pattern, packageRoot));
+}
+
+function workspacePatternMatches(pattern: string, packageRoot: string): boolean {
+  if (pattern === packageRoot) {
+    return true;
+  }
+  if (hasWorkspaceGlob(pattern)) {
+    return workspaceGlobMatches(pattern, packageRoot);
+  }
+  if (pattern.endsWith("/**")) {
+    return pathMatchesPrefix(packageRoot, pattern.slice(0, -3));
+  }
+  if (pattern.endsWith("/*")) {
+    const parent = pattern.slice(0, -2);
+    if (!pathMatchesPrefix(packageRoot, parent)) {
+      return false;
+    }
+    return packageRoot.slice(parent.length + 1).split("/").length === 1;
+  }
+  return false;
+}
+
+async function expandWorkspaceGlob(root: string, pattern: string): Promise<string[]> {
+  const packages: string[] = [];
+  const segments = pattern.split("/");
+
+  async function visit(base: string, remaining: string[]): Promise<void> {
+    const [segment, ...rest] = remaining;
+    if (segment === undefined) {
+      if (base.length > 0 && (await pathExists(join(root, base, "package.json")))) {
+        packages.push(base);
+      }
+      return;
+    }
+    if (!hasWorkspaceGlob(segment)) {
+      await visit(base.length === 0 ? segment : `${base}/${segment}`, rest);
+      return;
+    }
+    if (segment === "**") {
+      await visit(base, rest);
+      for (const entry of await safeDirectoryEntries(root, base)) {
+        await visit(base.length === 0 ? entry : `${base}/${entry}`, remaining);
+      }
+      return;
+    }
+    const matcher = globSegmentRegExp(segment);
+    for (const entry of await safeDirectoryEntries(root, base)) {
+      if (matcher.test(entry)) {
+        await visit(base.length === 0 ? entry : `${base}/${entry}`, rest);
+      }
+    }
+  }
+
+  await visit("", pattern.split("/"));
+  return packages.toSorted();
+}
+
+async function safeDirectoryEntries(root: string, prefix: string): Promise<string[]> {
+  const entries = await readdir(join(root, prefix), { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .map((entry) => entry.name)
+    .toSorted();
+}
+
+function hasWorkspaceGlob(pattern: string): boolean {
+  return /[*?]/u.test(pattern);
+}
+
+function workspaceGlobMatches(pattern: string, packageRoot: string): boolean {
+  return globSegmentsMatch(pattern.split("/"), packageRoot.split("/"));
+}
+
+function globSegmentsMatch(pattern: string[], candidate: string[]): boolean {
+  const [segment, ...remainingPattern] = pattern;
+  if (segment === undefined) {
+    return candidate.length === 0;
+  }
+  if (segment === "**") {
+    return (
+      globSegmentsMatch(remainingPattern, candidate) ||
+      (candidate.length > 0 && globSegmentsMatch(pattern, candidate.slice(1)))
+    );
+  }
+  const [candidateSegment, ...remainingCandidate] = candidate;
+  if (candidateSegment === undefined || !globSegmentRegExp(segment).test(candidateSegment)) {
+    return false;
+  }
+  return globSegmentsMatch(remainingPattern, remainingCandidate);
+}
+
+function globSegmentRegExp(segment: string): RegExp {
+  const escaped = segment.replace(/[.+^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`^${escaped.replace(/\*/gu, "[^/]*").replace(/\?/gu, "[^/]")}$`, "u");
 }
 
 function hasReactDependency(pkg: PackageJson): boolean {

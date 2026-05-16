@@ -560,9 +560,13 @@ describe("mapFeatures", () => {
     expect(result.features.map((feature) => feature.title)).not.toContain("React route /custom");
   });
 
-  it("discovers React packages from workspace globs", async () => {
+  it("discovers React packages from workspace globs and honors excludes", async () => {
     const root = await fixtureRoot("clawpatch-react-workspace-glob-");
-    await writeFixture(root, "pnpm-workspace.yaml", "packages:\n  - libs/*\n");
+    await writeFixture(
+      root,
+      "pnpm-workspace.yaml",
+      "packages:\n  - libs/*\n  - libs/*/plugins/*\n  - packages/*\n  - '!packages/legacy'\n",
+    );
     await writeFixture(
       root,
       "libs/web/package.json",
@@ -586,11 +590,52 @@ describe("mapFeatures", () => {
       "libs/web/src/pages/HomePage.tsx",
       "export default function HomePage() { return null; }\n",
     );
+    await writeFixture(
+      root,
+      "libs/suite/plugins/admin/package.json",
+      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "libs/suite/plugins/admin/src/App.tsx",
+      [
+        "import { Route, Routes } from 'react-router-dom';",
+        "import PluginPage from './PluginPage';",
+        'export function App() { return <Routes><Route path="/plugin" element={<PluginPage />} /></Routes>; }',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "libs/suite/plugins/admin/src/PluginPage.tsx",
+      "export default function PluginPage() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "packages/legacy/package.json",
+      JSON.stringify({ dependencies: { react: "1.0.0", "react-router-dom": "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "packages/legacy/src/App.tsx",
+      [
+        "import { Route, Routes } from 'react-router-dom';",
+        "import LegacyPage from './LegacyPage';",
+        'export function App() { return <Routes><Route path="/legacy" element={<LegacyPage />} /></Routes>; }',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "packages/legacy/src/LegacyPage.tsx",
+      "export default function LegacyPage() { return null; }\n",
+    );
 
     const project = await detectProject(root);
     const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
 
-    expect(result.features.map((feature) => feature.title)).toContain("React route /home");
+    expect(titles).toContain("React route /home");
+    expect(titles).toContain("React route /plugin");
+    expect(titles).not.toContain("React route /legacy");
   });
 
   it("maps nested SwiftPM, Apple, and Android Gradle app surfaces", async () => {
@@ -1567,6 +1612,50 @@ let package = Package(name: "HybridApp", targets: [.target(name: "HybridApp")])
     expect(titles).toContain("FastAPI route GET /public/users");
     expect(titles).toContain("FastAPI route GET /admin/stats");
     expect(titles).not.toContain("FastAPI route GET /admin/users");
+    expect(titles).not.toContain("FastAPI route GET /public/stats");
+  });
+
+  it("does not apply an imported FastAPI router prefix to unmounted sibling routers", async () => {
+    const root = await fixtureRoot("clawpatch-fastapi-unmounted-router-prefix-");
+    await writeFixture(
+      root,
+      "pyproject.toml",
+      '[project]\nname = "api"\ndependencies = ["fastapi"]\n',
+    );
+    await writeFixture(root, "backend/__init__.py", "");
+    await writeFixture(root, "backend/routes/__init__.py", "");
+    await writeFixture(
+      root,
+      "backend/main.py",
+      [
+        "from fastapi import FastAPI",
+        "from backend.routes.routers import public_router",
+        "app = FastAPI()",
+        'app.include_router(public_router, prefix="/public")',
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "backend/routes/routers.py",
+      [
+        "from fastapi import APIRouter",
+        "public_router = APIRouter()",
+        "admin_router = APIRouter()",
+        '@public_router.get("/users")',
+        "def users():",
+        "    return []",
+        '@admin_router.get("/stats")',
+        "def stats():",
+        "    return []",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("FastAPI route GET /public/users");
+    expect(titles).toContain("FastAPI route GET /stats");
     expect(titles).not.toContain("FastAPI route GET /public/stats");
   });
 

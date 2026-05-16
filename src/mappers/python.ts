@@ -229,8 +229,9 @@ function fastApiRoutesInFile(
     if (functionName === null) {
       continue;
     }
+    const filePrefix = acceptedReceivers.size <= 1 ? (prefixes.filePrefixes.get(file) ?? "") : "";
     const decoratorPrefix = joinRoutePaths(
-      routerMountPrefixes.get(decorator.receiver) ?? prefixes.filePrefixes.get(file) ?? "",
+      routerMountPrefixes.get(decorator.receiver) ?? filePrefix,
       routerPrefixes.get(decorator.receiver) ?? "",
     );
     routes.push({

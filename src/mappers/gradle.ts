@@ -1115,7 +1115,7 @@ function isKotlinStdlibImport(full: string): boolean {
 
 function isKotlinServerWebAnnotation(info: KotlinFileInfo, annotation: string): boolean {
   if (
-    [
+    ![
       "Controller",
       "RestController",
       "RequestMapping",
@@ -1124,18 +1124,40 @@ function isKotlinServerWebAnnotation(info: KotlinFileInfo, annotation: string): 
       "PutMapping",
       "DeleteMapping",
       "PatchMapping",
+      "Path",
+      "GET",
+      "POST",
+      "PUT",
+      "DELETE",
+      "PATCH",
     ].includes(annotation)
   ) {
-    return true;
-  }
-  if (!["Path", "GET", "POST", "PUT", "DELETE", "PATCH"].includes(annotation)) {
     return false;
   }
-  const full = info.imports.get(annotation);
+  for (const full of info.qualifiedAnnotations) {
+    if (full.split(".").at(-1) === annotation) {
+      return isKotlinServerWebImport(full);
+    }
+  }
+  const imported = info.imports.get(annotation);
+  if (imported !== undefined) {
+    return isKotlinServerWebImport(imported);
+  }
+  for (const full of info.imports.values()) {
+    if (full.endsWith(".*") && isKotlinServerWebImport(full)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isKotlinServerWebImport(full: string): boolean {
   return (
-    (full !== undefined && /^(?:javax|jakarta)\.ws\.rs\./u.test(full)) ||
-    info.qualifiedAnnotations.has(`javax.ws.rs.${annotation}`) ||
-    info.qualifiedAnnotations.has(`jakarta.ws.rs.${annotation}`)
+    full.startsWith("org.springframework.web.bind.annotation.") ||
+    full.startsWith("io.ktor.server.") ||
+    full.startsWith("org.http4k.") ||
+    full.startsWith("io.javalin.") ||
+    /^(?:jakarta|javax)\.ws\.rs\./u.test(full)
   );
 }
 
@@ -1862,24 +1884,20 @@ function hasAppliedAndroidPlugin(
   isKotlinDsl: boolean,
 ): boolean {
   const source = stripGradleBuildComments(buildSource, isKotlinDsl);
-  const lines = source.split(/\r?\n/u);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    for (const match of line.matchAll(androidPluginDeclarationPattern())) {
-      const start = match.index ?? 0;
-      if (!hasGradleApplyFalse(lines, index, start)) {
-        return true;
-      }
+  for (const match of source.matchAll(androidPluginDeclarationPattern())) {
+    const start = match.index ?? 0;
+    if (!hasGradleApplyFalse(source, start)) {
+      return true;
     }
-    for (const match of line.matchAll(/\balias\s*\(\s*libs\.plugins\.([A-Za-z0-9_.]+)\s*\)/gu)) {
-      const alias = match[1];
-      if (
-        alias !== undefined &&
-        androidAliases.has(normalizeVersionCatalogAlias(alias)) &&
-        !hasGradleApplyFalse(lines, index, match.index ?? 0)
-      ) {
-        return true;
-      }
+  }
+  for (const match of source.matchAll(/\balias\s*\(\s*libs\.plugins\.([A-Za-z0-9_.]+)\s*\)/gu)) {
+    const alias = match[1];
+    if (
+      alias !== undefined &&
+      androidAliases.has(normalizeVersionCatalogAlias(alias)) &&
+      !hasGradleApplyFalse(source, match.index ?? 0)
+    ) {
+      return true;
     }
   }
   return hasDirectAndroidApplyPlugin(source);
@@ -1948,7 +1966,7 @@ function stripGradleBuildComments(source: string, supportsNestedBlockComments: b
 
 function hasDirectAndroidApplyPlugin(source: string): boolean {
   const pattern =
-    /\b(?:apply\s+plugin:\s*["']com\.android\.(?:application|library|dynamic-feature|test)["']|apply\s*\(\s*plugin\s*(?:=|:)\s*["']com\.android\.(?:application|library|dynamic-feature|test)["']\s*\))/gu;
+    /\b(?:apply\s+plugin\s*:\s*["']com\.android\.(?:application|library|dynamic-feature|test)["']|apply\s*\(\s*plugin\s*(?:=|:)\s*["']com\.android\.(?:application|library|dynamic-feature|test)["']\s*\))/gu;
   for (const match of source.matchAll(pattern)) {
     if (!isInsideGradleChildProjectBlock(source, match.index ?? 0)) {
       return true;
@@ -1986,37 +2004,34 @@ function isInsideGradleChildProjectBlock(source: string, offset: number): boolea
   return scopes.includes(true);
 }
 
-function hasGradleApplyFalse(lines: string[], index: number, start: number): boolean {
-  const line = lines[index] ?? "";
-  const segmentEnd = line.indexOf(";", start);
-  const sameLineSegment = line.slice(start, segmentEnd === -1 ? undefined : segmentEnd);
-  if (segmentEnd !== -1) {
-    return /\bapply\s+false\b|\.\s*apply\s*\(\s*false\s*\)/u.test(sameLineSegment);
-  }
-  const segments = [sameLineSegment];
-  for (let next = index + 1; next < lines.length; next += 1) {
-    const nextLine = lines[next] ?? "";
-    if (isGradlePluginDeclarationLine(nextLine)) {
-      break;
-    }
-    segments.push(nextLine);
-  }
-  if (/\bapply\s+false\b|\.\s*apply\s*\(\s*false\s*\)/u.test(segments.join("\n"))) {
-    return true;
-  }
-  return false;
+function hasGradleApplyFalse(source: string, start: number): boolean {
+  const segmentEnd = gradlePluginInvocationEnd(source, start);
+  const segment = source.slice(start, segmentEnd);
+  return /\bapply\s+false\b|\.\s*apply\s*\(\s*false\s*\)/u.test(segment);
 }
 
 function androidPluginDeclarationPattern(): RegExp {
   return /\b(?:id\s*\(?\s*["']com\.android\.(?:application|library|dynamic-feature|test)["']\s*\)?|alias\s*\(\s*libs\.plugins\.[A-Za-z0-9_.]*(?:android\.(?:application|library|dynamicFeature|dynamic-feature|test)|android(?:Application|Library|DynamicFeature|Test)|comAndroid(?:Application|Library|DynamicFeature|Test))[A-Za-z0-9_.]*\s*\))/gu;
 }
 
-function normalizeVersionCatalogAlias(alias: string): string {
-  return alias.replace(/[-_]/gu, ".").toLowerCase();
+function gradlePluginInvocationEnd(source: string, start: number): number {
+  const candidates = [
+    source.indexOf(";", start),
+    source.indexOf("\n    id", start + 1),
+    source.indexOf("\n  id", start + 1),
+    source.indexOf("\nid", start + 1),
+    source.indexOf("\n    alias", start + 1),
+    source.indexOf("\n  alias", start + 1),
+    source.indexOf("\nalias", start + 1),
+    source.indexOf("\n    kotlin", start + 1),
+    source.indexOf("\n  kotlin", start + 1),
+    source.indexOf("\nkotlin", start + 1),
+  ].filter((index) => index !== -1);
+  return candidates.length === 0 ? source.length : Math.min(...candidates);
 }
 
-function isGradlePluginDeclarationLine(line: string): boolean {
-  return /^\s*(?:id\s*(?:\(|["'])|alias\s*\(|[A-Za-z_][A-Za-z0-9_.]*\s*\()/u.test(line);
+function normalizeVersionCatalogAlias(alias: string): string {
+  return alias.replace(/[-_]/gu, ".").toLowerCase();
 }
 
 function isGradleSourceFile(path: string): boolean {

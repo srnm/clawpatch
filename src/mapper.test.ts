@@ -3350,6 +3350,49 @@ describe("mapFeatures", () => {
     ).toBe(true);
   });
 
+  it("keeps Android UI path fallback for injected base activities", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-android-ui-di-path-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("com.android.application") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/ui/MainActivity.kt",
+      [
+        "package com.example.ui",
+        "",
+        "import dagger.hilt.android.AndroidEntryPoint",
+        "",
+        "@AndroidEntryPoint",
+        "class MainActivity : BaseActivity()",
+        "",
+        "open class BaseActivity",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-android-role-ui-entrypoint" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/ui/MainActivity.kt",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-android-role-dependency-injection" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/ui/MainActivity.kt",
+          ),
+      ),
+    ).toBe(true);
+  });
+
   it("does not map Android app utility imports as UI entrypoints", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-android-app-utility-import-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
@@ -3563,7 +3606,7 @@ describe("mapFeatures", () => {
         "@RestController",
         "class OrderController {",
         '  @GetMapping("/orders")',
-        '  fun list(): String = "ok"',
+        '  fun body(): ByteArray = "ok".encodeToByteArray()',
         "}",
         "",
       ].join("\n"),

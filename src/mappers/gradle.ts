@@ -312,8 +312,10 @@ async function kotlinRoleSeeds(
         !frameworkEvidence.some((evidenceItem) => evidenceItem.role === item.role) &&
         !(
           tags.includes("android") &&
-          frameworkEvidence.length > 0 &&
-          item.role === "android-ui-entrypoint"
+          item.role === "android-ui-entrypoint" &&
+          frameworkEvidence.some((evidenceItem) =>
+            ["android-data-boundary", "android-view-model"].includes(evidenceItem.role),
+          )
         ),
     );
     const evidence = [...frameworkEvidence, ...pathEvidence];
@@ -845,17 +847,24 @@ function isKotlinBuiltinType(type: string): boolean {
     "Any",
     "Array",
     "Boolean",
+    "BooleanArray",
     "Byte",
+    "ByteArray",
     "Char",
+    "CharArray",
     "CharSequence",
     "Collection",
     "Comparable",
     "Double",
+    "DoubleArray",
     "Float",
+    "FloatArray",
     "Int",
+    "IntArray",
     "Iterable",
     "List",
     "Long",
+    "LongArray",
     "Map",
     "MutableCollection",
     "MutableList",
@@ -868,9 +877,18 @@ function isKotlinBuiltinType(type: string): boolean {
     "Sequence",
     "Set",
     "Short",
+    "ShortArray",
     "String",
     "Triple",
+    "UByte",
+    "UByteArray",
+    "UInt",
+    "UIntArray",
+    "ULong",
+    "ULongArray",
     "Unit",
+    "UShort",
+    "UShortArray",
   ].includes(type);
 }
 

@@ -931,9 +931,23 @@ function kotlinImportForType(
   type: string,
   kotlinPackageTypes: Map<string, Set<string>>,
 ): string | undefined {
-  if (type.includes(".")) {
-    const rootType = type.split(".")[0] ?? type;
-    return isKotlinStdlibImport(type) || isKotlinBuiltinType(rootType) ? undefined : type;
+  const [rootType, ...nestedParts] = type.split(".");
+  const isNestedType = nestedParts.length > 0;
+  if (rootType === undefined || rootType.length === 0) {
+    return undefined;
+  }
+  if (isKotlinStdlibImport(type) || isKotlinBuiltinType(rootType)) {
+    return undefined;
+  }
+  if (isNestedType && /^[a-z]/u.test(rootType)) {
+    return type;
+  }
+  if (isNestedType) {
+    const directRoot = info.imports.get(rootType);
+    if (directRoot !== undefined) {
+      const full = `${directRoot}.${nestedParts.join(".")}`;
+      return isKotlinStdlibImport(full) ? undefined : full;
+    }
   }
   const direct = info.imports.get(type);
   if (direct !== undefined) {
@@ -941,18 +955,29 @@ function kotlinImportForType(
   }
   const packageName = info.packageName ?? "";
   if (
-    info.declarations.some((declaration) => declaration.name === type) ||
-    kotlinPackageTypes.get(packageName)?.has(type) === true
+    info.declarations.some((declaration) => declaration.name === rootType) ||
+    kotlinPackageTypes.get(packageName)?.has(rootType) === true
   ) {
     return undefined;
   }
-  if (isKotlinBuiltinType(type)) {
+  if (!isNestedType && isKotlinBuiltinType(type)) {
     return undefined;
   }
   for (const full of info.imports.values()) {
-    if (full.endsWith(".*") && kotlinPackageTypes.get(full.slice(0, -2))?.has(type) === true) {
+    if (full.endsWith(".*") && kotlinPackageTypes.get(full.slice(0, -2))?.has(rootType) === true) {
       return undefined;
     }
+  }
+  if (isNestedType) {
+    for (const full of info.imports.values()) {
+      if (full.endsWith(".*")) {
+        const wildcardType = `${full.slice(0, -1)}${type}`;
+        if (!isKotlinStdlibImport(wildcardType)) {
+          return wildcardType;
+        }
+      }
+    }
+    return type;
   }
   for (const full of info.imports.values()) {
     if (full.endsWith(".*")) {

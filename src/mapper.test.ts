@@ -2840,6 +2840,42 @@ describe("mapFeatures", () => {
     ).toBe(false);
   });
 
+  it("does not treat same-package nested Kotlin types as external framework types", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-local-nested-type-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/jobs/Job.kt",
+      ["package com.example.jobs", "", "class Job {", "  class Factory", "}", ""].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/jobs/JobFactoryProvider.kt",
+      [
+        "package com.example.jobs",
+        "",
+        "class JobFactoryProvider {",
+        "  fun build(): Job.Factory = Job.Factory()",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/jobs/JobFactoryProvider.kt",
+          ),
+      ),
+    ).toBe(false);
+  });
+
   it("does not infer Android roles from non-Android Gradle module paths", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-android-path-leak-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");

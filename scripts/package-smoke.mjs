@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -89,24 +89,19 @@ try {
     }),
   );
   const tarball = join(tmp, packFilename(packOutput));
-  const zodPackOutput = JSON.parse(
-    run(
-      "npm",
-      [
-        "pack",
-        "--json",
-        "--cache",
-        npmCache,
-        "--pack-destination",
-        tmp,
-        dirname(moduleRequire.resolve("zod/package.json")),
-      ],
-      { stdio: "pipe" },
-    ),
-  );
-  const zodTarball = join(tmp, packFilename(zodPackOutput));
+  const dependencyPaths = runtimeDependencyPaths();
   mkdirSync(installRoot, { recursive: true });
-  run("npm", ["install", "--cache", npmCache, "--prefix", installRoot, tarball, zodTarball]);
+  run("npm", [
+    "install",
+    "--offline",
+    "--omit=dev",
+    "--cache",
+    npmCache,
+    "--prefix",
+    installRoot,
+    tarball,
+    ...dependencyPaths,
+  ]);
 
   const bin = join(
     installRoot,
@@ -157,4 +152,11 @@ function packFilename(output) {
     throw new Error("npm pack did not report a tarball filename");
   }
   return filename;
+}
+
+function runtimeDependencyPaths() {
+  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  return Object.keys(packageJson.dependencies ?? {}).map((name) =>
+    dirname(moduleRequire.resolve(`${name}/package.json`)),
+  );
 }

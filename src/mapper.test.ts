@@ -6990,6 +6990,37 @@ describe("mapFeatures", () => {
     expect(framework?.ownedFiles[0]?.reason).toContain("external type org.scheduler.");
   });
 
+  it("maps Kotlin supertypes after visibility-before-annotation constructors", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-constructor-modifier-order-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/jobs/JobFactory.kt",
+      [
+        "package com.example.jobs",
+        "",
+        "import javax.inject.Inject",
+        "import org.scheduler.JobFactoryBase",
+        "",
+        "class JobFactory public @Inject constructor(private val dep: String) : JobFactoryBase()",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const framework = result.features.find(
+      (feature) =>
+        feature.source === "kotlin-server-role-framework-component" &&
+        feature.ownedFiles.some(
+          (file) => file.path === "src/main/kotlin/com/example/jobs/JobFactory.kt",
+        ),
+    );
+
+    expect(framework?.ownedFiles[0]?.reason).toContain("external type org.scheduler.");
+  });
+
   it("maps Kotlin supertypes after function-typed constructor parameters", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-function-param-constructor-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");

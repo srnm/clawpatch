@@ -67,7 +67,6 @@ import {
   FindingRecord,
   PatchAttempt,
   RunRecord,
-  ReviewOutput,
   reasoningEffortSchema,
   reasoningEfforts,
 } from "./types.js";

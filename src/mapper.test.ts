@@ -3771,6 +3771,49 @@ describe("mapFeatures", () => {
     ).toBe(false);
   });
 
+  it("does not resolve Kotlin range return types through wildcard imports", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-range-wildcard-type-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/api/RangeController.kt",
+      [
+        "package com.example.api",
+        "",
+        "import org.springframework.web.bind.annotation.*",
+        "",
+        "@RestController",
+        "class RangeController {",
+        "  fun ids(): IntRange = 1..3",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/api/RangeController.kt",
+          ),
+      ),
+    ).toBe(false);
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-web-entrypoint" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/api/RangeController.kt",
+          ),
+      ),
+    ).toBe(true);
+  });
+
   it("does not resolve explicitly imported Kotlin stdlib return types as framework roles", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-stdlib-direct-type-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");

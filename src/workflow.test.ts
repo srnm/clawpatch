@@ -6,6 +6,7 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   unlink,
@@ -293,6 +294,20 @@ describe("workflow", () => {
     const root = join(await fixtureRoot("clawpatch-missing-root-parent-"), "missing");
 
     await expect(makeContext(testOptions(root))).rejects.toMatchObject({ exitCode: 2 });
+  });
+
+  it("resolves relative explicit roots before provider commands use them", async () => {
+    const root = await fixtureRoot("clawpatch-relative-root-parent-");
+    await mkdir(join(root, "app"), { recursive: true });
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(root);
+      const context = await makeContext(testOptions("app"));
+
+      await expect(realpath(context.root)).resolves.toBe(await realpath(join(root, "app")));
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 
   it("initializes, maps, reviews, and reports findings", async () => {

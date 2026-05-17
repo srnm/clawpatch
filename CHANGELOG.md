@@ -3,6 +3,7 @@
 ## 0.2.1 - Unreleased
 
 - Added explicit Codex reasoning effort selection via `--reasoning-effort`, `CLAWPATCH_REASONING_EFFORT`, and provider config, with `doctor` reporting the active setting.
+- Fixed provider commands with relative `--root` paths by canonicalizing explicit roots before invoking Codex or other providers.
 - Improved `clawpatch fix` handoff context and patch-attempt changed-file auditing for dirty-worktree fixes.
 - Improved Node workspace mapping with richer package overview features, generic extension package context, semantic large-source splits, and stricter generated/build ownership hygiene.
 - Improved Kotlin JVM and Android semantic role mapping for Gradle projects, including Android plugin aliases, local type handling, comment/string parsing, and role fallback edges, thanks @mrmans0n.

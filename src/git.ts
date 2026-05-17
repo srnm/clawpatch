@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { runCommand } from "./exec.js";
 import { ClawpatchError } from "./errors.js";
 
@@ -43,11 +43,12 @@ export async function discoverGit(cwd: string): Promise<GitInfo> {
 
 export async function findProjectRoot(cwd: string, explicitRoot?: string): Promise<string> {
   if (explicitRoot !== undefined) {
-    const info = await stat(explicitRoot).catch(() => null);
+    const root = resolve(cwd, explicitRoot);
+    const info = await stat(root).catch(() => null);
     if (info === null || !info.isDirectory()) {
       throw new ClawpatchError(`root not found: ${explicitRoot}`, 2, "invalid-root");
     }
-    return explicitRoot;
+    return root;
   }
   const git = await discoverGit(cwd);
   return git.root ?? cwd;

@@ -3662,6 +3662,38 @@ describe("mapFeatures", () => {
     expect(web?.ownedFiles[0]?.reason).toContain("server web annotation @Path");
   });
 
+  it("maps fully qualified Kotlin return types as framework roles", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-qualified-return-type-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/api/OrderResource.kt",
+      [
+        "package com.example.api",
+        "",
+        "class OrderResource {",
+        "  fun response(): io.ktor.server.response.ApplicationResponse = TODO()",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const component = result.features.find(
+      (feature) =>
+        feature.source === "kotlin-server-role-framework-component" &&
+        feature.ownedFiles.some(
+          (file) => file.path === "src/main/kotlin/com/example/api/OrderResource.kt",
+        ),
+    );
+
+    expect(component?.ownedFiles[0]?.reason).toContain(
+      "returns external type io.ktor.server.response.ApplicationResponse",
+    );
+  });
+
   it("does not resolve Kotlin built-in return types through wildcard imports", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-builtin-wildcard-type-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
@@ -3704,6 +3736,39 @@ describe("mapFeatures", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("does not resolve Kotlin default return types through wildcard imports", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-default-wildcard-type-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/jobs/JobFactory.kt",
+      [
+        "package com.example.jobs",
+        "",
+        "import org.scheduler.*",
+        "",
+        "class JobFactory {",
+        "  fun failure(): Throwable = TODO()",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/jobs/JobFactory.kt",
+          ),
+      ),
+    ).toBe(false);
   });
 
   it("does not resolve explicitly imported Kotlin stdlib return types as framework roles", async () => {

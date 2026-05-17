@@ -3798,7 +3798,14 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "src/main/kotlin/com/example/repository/UserRepository.kt",
-      "package com.example.repository\ninterface UserRepository { fun users(): List<String> }\n",
+      [
+        "package com.example.repository",
+        "",
+        "import kotlinx.coroutines.flow.Flow",
+        "",
+        "interface UserRepository { fun users(): Flow<String> }",
+        "",
+      ].join("\n"),
     );
 
     const project = await detectProject(root);
@@ -3817,6 +3824,15 @@ describe("mapFeatures", () => {
       result.features.some(
         (feature) =>
           feature.source === "kotlin-server-role-persistence-boundary" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/repository/UserRepository.kt",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
           feature.ownedFiles.some(
             (file) => file.path === "src/main/kotlin/com/example/repository/UserRepository.kt",
           ),

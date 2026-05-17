@@ -307,10 +307,16 @@ async function kotlinRoleSeeds(
       projectPackages,
       kotlinPackageTypes,
     );
-    const pathEvidence = kotlinPathRoleEvidence(filePath, tags);
-    const evidence = frameworkEvidence.every((item) => item.role === "server-extension-boundary")
-      ? [...frameworkEvidence, ...pathEvidence]
-      : frameworkEvidence;
+    const pathEvidence = kotlinPathRoleEvidence(filePath, tags).filter(
+      (item) =>
+        !frameworkEvidence.some((evidenceItem) => evidenceItem.role === item.role) &&
+        !(
+          tags.includes("android") &&
+          frameworkEvidence.length > 0 &&
+          item.role === "android-ui-entrypoint"
+        ),
+    );
+    const evidence = [...frameworkEvidence, ...pathEvidence];
     for (const item of evidence) {
       const byFile = matches.get(item.role) ?? new Map();
       const reasons = byFile.get(filePath) ?? [];

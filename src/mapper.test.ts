@@ -5882,9 +5882,15 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "src/main/kotlin/com/example/api/LocalController.kt",
-      ["package com.example.api", "", "@com.acme.RestController", "class LocalController", ""].join(
-        "\n",
-      ),
+      [
+        "package com.example.api",
+        "",
+        "import org.springframework.web.bind.annotation.*",
+        "",
+        "@com.acme.RestController",
+        "class LocalController",
+        "",
+      ].join("\n"),
     );
 
     const project = await detectProject(root);

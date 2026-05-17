@@ -347,6 +347,7 @@ type KotlinFileInfo = {
   packageName: string | null;
   annotations: Set<string>;
   qualifiedAnnotations: Set<string>;
+  unqualifiedAnnotations: Set<string>;
   imports: Map<string, string>;
   declarations: KotlinDeclaration[];
   functionReturnTypes: Set<string>;
@@ -850,7 +851,7 @@ function kotlinFrameworkRoleEvidence(
     }
   }
 
-  for (const full of info.imports.values()) {
+  for (const [importedName, full] of info.imports.entries()) {
     if (isAndroid && isAndroidUiEntrypointImport(full)) {
       evidence.push({
         role: "android-ui-entrypoint",
@@ -900,11 +901,10 @@ function kotlinFrameworkRoleEvidence(
     }
     if (
       !isAndroid &&
-      (full.startsWith("org.springframework.web.bind.annotation.") ||
+      (isKotlinServerWebAnnotationImportUsed(info, importedName, full) ||
         full.startsWith("io.ktor.server.") ||
         full.startsWith("org.http4k.") ||
-        full.startsWith("io.javalin.") ||
-        /^(?:jakarta|javax)\.ws\.rs\./u.test(full))
+        full.startsWith("io.javalin."))
     ) {
       evidence.push({
         role: "server-web-entrypoint",
@@ -1230,6 +1230,12 @@ function isKotlinServerWebAnnotation(info: KotlinFileInfo, annotation: string): 
       return true;
     }
   }
+  if (
+    !info.unqualifiedAnnotations.has(annotation) &&
+    [...info.qualifiedAnnotations].some((full) => full.split(".").at(-1) === annotation)
+  ) {
+    return false;
+  }
   const imported = info.imports.get(annotation);
   if (imported !== undefined) {
     return isKotlinServerWebImport(imported);
@@ -1242,12 +1248,34 @@ function isKotlinServerWebAnnotation(info: KotlinFileInfo, annotation: string): 
   return false;
 }
 
+function isKotlinServerWebAnnotationImportUsed(
+  info: KotlinFileInfo,
+  importedName: string,
+  full: string,
+): boolean {
+  if (!isKotlinServerWebAnnotationImport(full)) {
+    return false;
+  }
+  if (full.endsWith(".*")) {
+    return [...info.unqualifiedAnnotations].some((annotation) =>
+      isKotlinServerWebAnnotation(info, annotation),
+    );
+  }
+  return info.unqualifiedAnnotations.has(importedName);
+}
+
 function isKotlinServerWebImport(full: string): boolean {
   return (
-    full.startsWith("org.springframework.web.bind.annotation.") ||
+    isKotlinServerWebAnnotationImport(full) ||
     full.startsWith("io.ktor.server.") ||
     full.startsWith("org.http4k.") ||
-    full.startsWith("io.javalin.") ||
+    full.startsWith("io.javalin.")
+  );
+}
+
+function isKotlinServerWebAnnotationImport(full: string): boolean {
+  return (
+    full.startsWith("org.springframework.web.bind.annotation.") ||
     /^(?:jakarta|javax)\.ws\.rs\./u.test(full)
   );
 }
@@ -1310,6 +1338,7 @@ function parseKotlinFile(source: string): KotlinFileInfo {
 
   const annotations = new Set<string>();
   const qualifiedAnnotations = new Set<string>();
+  const unqualifiedAnnotations = new Set<string>();
   for (const match of stripped.matchAll(
     /@(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_.]*)/gu,
   )) {
@@ -1318,6 +1347,8 @@ function parseKotlinFile(source: string): KotlinFileInfo {
       annotations.add(raw.split(".").at(-1) ?? raw);
       if (raw.includes(".")) {
         qualifiedAnnotations.add(raw);
+      } else {
+        unqualifiedAnnotations.add(raw);
       }
     }
   }
@@ -1336,6 +1367,7 @@ function parseKotlinFile(source: string): KotlinFileInfo {
     packageName,
     annotations,
     qualifiedAnnotations,
+    unqualifiedAnnotations,
     imports,
     declarations: parseKotlinDeclarations(stripped),
     functionReturnTypes,

@@ -1708,6 +1708,7 @@ function versionCatalogPaths(buildFile: string): string[] {
 function parseAndroidPluginAliases(source: string): Set<string> {
   const aliases = new Set<string>();
   let inPlugins = false;
+  let pluginTableAlias: string | null = null;
   for (const rawLine of source.split(/\r?\n/u)) {
     const line = rawLine.replace(/#.*/u, "").trim();
     if (line.length === 0) {
@@ -1715,13 +1716,14 @@ function parseAndroidPluginAliases(source: string): Set<string> {
     }
     const section = /^\[([^\]]+)\]$/u.exec(line)?.[1];
     if (section !== undefined) {
-      inPlugins = section === "plugins";
+      inPlugins = section === "plugins" || section.startsWith("plugins.");
+      pluginTableAlias = section.startsWith("plugins.") ? section.slice("plugins.".length) : null;
       continue;
     }
     if (!inPlugins || !/com\.android\.(?:application|library|dynamic-feature|test)/u.test(line)) {
       continue;
     }
-    const alias = /^([A-Za-z0-9_.-]+)\s*=/u.exec(line)?.[1];
+    const alias = pluginTableAlias ?? /^([A-Za-z0-9_.-]+?)(?:\.id)?\s*=/u.exec(line)?.[1];
     if (alias !== undefined) {
       aliases.add(normalizeVersionCatalogAlias(alias));
     }

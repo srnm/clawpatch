@@ -3350,6 +3350,41 @@ describe("mapFeatures", () => {
     ).toBe(true);
   });
 
+  it("does not map Android app utility imports as UI entrypoints", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-android-app-utility-import-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("com.android.application") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/notifications/NotificationHelper.kt",
+      [
+        "package com.example.notifications",
+        "",
+        "import android.app.NotificationChannel",
+        "import android.app.PendingIntent",
+        "",
+        "class NotificationHelper {",
+        '  fun channel(): NotificationChannel = NotificationChannel("id", "name", 3)',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-android-role-ui-entrypoint" &&
+          feature.ownedFiles.some(
+            (file) =>
+              file.path === "src/main/kotlin/com/example/notifications/NotificationHelper.kt",
+          ),
+      ),
+    ).toBe(false);
+  });
+
   it("maps Kotlin role evidence from wildcard imports", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-wildcard-imports-");
     await writeFixture(root, "settings.gradle.kts", 'pluginManagement {}\ninclude(":app")\n');

@@ -594,15 +594,7 @@ function kotlinFrameworkRoleEvidence(
   }
 
   for (const full of info.imports.values()) {
-    if (
-      isAndroid &&
-      (full.startsWith("android.app.") ||
-        full.startsWith("android.content.BroadcastReceiver") ||
-        full.startsWith("androidx.activity.") ||
-        full.startsWith("androidx.appcompat.app.") ||
-        full.startsWith("androidx.fragment.app.") ||
-        full.startsWith("androidx.lifecycle.LifecycleService"))
-    ) {
+    if (isAndroid && isAndroidUiEntrypointImport(full)) {
       evidence.push({
         role: "android-ui-entrypoint",
         reason: `Android UI import ${full}`,
@@ -1168,6 +1160,20 @@ function isKotlinExternalClientImport(full: string): boolean {
     full.startsWith("com.google.cloud.") ||
     full.startsWith("com.azure.")
   );
+}
+
+function isAndroidUiEntrypointImport(full: string): boolean {
+  return [
+    "android.app.Activity",
+    "android.app.ListActivity",
+    "android.app.Service",
+    "android.content.BroadcastReceiver",
+    "androidx.activity.ComponentActivity",
+    "androidx.appcompat.app.AppCompatActivity",
+    "androidx.fragment.app.DialogFragment",
+    "androidx.fragment.app.Fragment",
+    "androidx.lifecycle.LifecycleService",
+  ].includes(full);
 }
 
 function isSpringDataPersistenceImport(full: string): boolean {

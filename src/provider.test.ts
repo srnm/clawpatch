@@ -3,13 +3,8 @@ import { ClawpatchError } from "./errors.js";
 import { __testing, extractJson, providerByName } from "./provider.js";
 
 // eslint-disable-next-line no-underscore-dangle
-const {
-  acpxFailureMessage,
-  extractAcpxJson,
-  extractOpencodeJson,
-  parseAcpxAgent,
-  parseCodexJson,
-} = __testing;
+const { acpxFailureMessage, extractAcpxJson, extractOpencodeJson, parseAcpxAgent, parseCodexJson } =
+  __testing;
 
 function updateEnvelope(update: object): string {
   return JSON.stringify({

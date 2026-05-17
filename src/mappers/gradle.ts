@@ -913,6 +913,11 @@ function kotlinImportForType(
     return undefined;
   }
   for (const full of info.imports.values()) {
+    if (full.endsWith(".*") && kotlinPackageTypes.get(full.slice(0, -2))?.has(type) === true) {
+      return undefined;
+    }
+  }
+  for (const full of info.imports.values()) {
     if (full.endsWith(".*")) {
       const wildcardType = `${full.slice(0, -1)}${type}`;
       if (!isKotlinStdlibImport(wildcardType)) {
@@ -1255,6 +1260,7 @@ function isKotlinExternalClientImport(full: string): boolean {
     isNetworkClientImport(full) ||
     full.startsWith("retrofit2.") ||
     full.startsWith("okhttp3.") ||
+    full.startsWith("org.apache.http.") ||
     full.startsWith("io.ktor.client.") ||
     full.startsWith("io.grpc.") ||
     full.startsWith("software.amazon.awssdk.") ||

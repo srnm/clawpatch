@@ -3551,6 +3551,38 @@ describe("mapFeatures", () => {
     expect(di?.ownedFiles[0]?.reason).toContain("org.koin.dsl.*");
   });
 
+  it("maps Kotlin Apache HTTP imports as external clients", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-apache-http-client-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/client/LegacyClient.kt",
+      [
+        "package com.example.client",
+        "",
+        "import org.apache.http.client.HttpClient",
+        "",
+        "class LegacyClient(private val client: HttpClient)",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const client = result.features.find(
+      (feature) =>
+        feature.source === "kotlin-server-role-external-client" &&
+        feature.ownedFiles.some(
+          (file) => file.path === "src/main/kotlin/com/example/client/LegacyClient.kt",
+        ),
+    );
+
+    expect(client?.ownedFiles[0]?.reason).toContain(
+      "external client import org.apache.http.client.HttpClient",
+    );
+  });
+
   it("keeps injected Android data consumers in data role path fallback", async () => {
     const root = await fixtureRoot("clawpatch-kotlin-android-injected-data-");
     await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
@@ -3915,6 +3947,45 @@ describe("mapFeatures", () => {
           feature.source === "kotlin-server-role-framework-component" &&
           feature.ownedFiles.some(
             (file) => file.path === "src/main/kotlin/com/example/jobs/JobFactory.kt",
+          ),
+      ),
+    ).toBe(false);
+  });
+
+  it("prefers local Kotlin wildcard declarations over earlier external wildcards", async () => {
+    const root = await fixtureRoot("clawpatch-kotlin-local-wildcard-precedence-");
+    await writeFixture(root, "settings.gradle.kts", "pluginManagement {}\n");
+    await writeFixture(root, "build.gradle.kts", 'plugins { id("org.jetbrains.kotlin.jvm") }\n');
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/jobs/Job.kt",
+      "package com.example.jobs\nclass Job(val id: String)\n",
+    );
+    await writeFixture(
+      root,
+      "src/main/kotlin/com/example/factory/JobFactory.kt",
+      [
+        "package com.example.factory",
+        "",
+        "import org.scheduler.*",
+        "import com.example.jobs.*",
+        "",
+        "class JobFactory {",
+        '  fun buildJob(): Job = Job("1")',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.some(
+        (feature) =>
+          feature.source === "kotlin-server-role-framework-component" &&
+          feature.ownedFiles.some(
+            (file) => file.path === "src/main/kotlin/com/example/factory/JobFactory.kt",
           ),
       ),
     ).toBe(false);

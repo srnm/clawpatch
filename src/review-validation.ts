@@ -12,9 +12,10 @@ export async function validateReviewOutput(
   const included = includedReviewPaths(feature, config);
   const cache = new Map<string, Promise<string>>();
   for (const file of output.inspected.files) {
-    assertIncludedPath(file, included, "inspected file");
+    assertSafePath(file, "inspected file");
   }
-  for (const finding of output.findings) {
+  const findings = output.findings.slice(0, config.review.maxFindingsPerFeature);
+  for (const finding of findings) {
     if (finding.evidence.length === 0) {
       throwMalformed(`finding "${finding.title}" has no evidence`);
     }
@@ -25,7 +26,7 @@ export async function validateReviewOutput(
       assertQuote(contents, evidence);
     }
   }
-  return output;
+  return { ...output, findings };
 }
 
 function includedReviewPaths(feature: FeatureRecord, config: ClawpatchConfig): Set<string> {
@@ -39,11 +40,16 @@ function includedReviewPaths(feature: FeatureRecord, config: ClawpatchConfig): S
 
 function assertIncludedPath(path: string, included: ReadonlySet<string>, label: string): void {
   const normalized = normalizePath(path);
-  if (normalized.startsWith("../") || isAbsolute(normalized)) {
-    throwMalformed(`${label} escapes repository root: ${path}`);
-  }
+  assertSafePath(path, label);
   if (!included.has(normalized)) {
     throwMalformed(`${label} was not included in review context: ${path}`);
+  }
+}
+
+function assertSafePath(path: string, label: string): void {
+  const normalized = normalizePath(path);
+  if (normalized.startsWith("../") || isAbsolute(normalized)) {
+    throwMalformed(`${label} escapes repository root: ${path}`);
   }
 }
 

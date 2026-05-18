@@ -64,6 +64,37 @@ describe("validateReviewOutput", () => {
       ),
     ).rejects.toMatchObject({ code: "malformed-output" });
   });
+
+  it("validates only findings kept by the feature finding cap", async () => {
+    const root = await fixtureRoot("clawpatch-review-validation-cap-");
+    await writeFixture(root, "src/index.ts", "const value = 'TODO_BUG';\n");
+    await writeFixture(root, "src/other.ts", "const value = 'hidden';\n");
+    const config = defaultConfig();
+    config.review.maxFindingsPerFeature = 1;
+    const providerOutput = output("src/index.ts");
+    const keptFinding = providerOutput.findings[0];
+    if (keptFinding === undefined) {
+      throw new Error("fixture output did not include a finding");
+    }
+    providerOutput.findings.push({
+      ...keptFinding,
+      title: "Discarded",
+      evidence: [
+        {
+          path: "src/other.ts",
+          startLine: 1,
+          endLine: 1,
+          symbol: null,
+          quote: "hidden",
+        },
+      ],
+    });
+    providerOutput.inspected.files.push("src/other.ts");
+
+    await expect(
+      validateReviewOutput(root, feature("src/index.ts"), config, providerOutput),
+    ).resolves.toMatchObject({ findings: [{ title: "Bug" }] });
+  });
 });
 
 function feature(path: string): FeatureRecord {

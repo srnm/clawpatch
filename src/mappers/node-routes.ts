@@ -385,7 +385,11 @@ function readExpressStaticImportClause(source: string, importIndex: number): str
     }
     if (isKeywordAt(source, cursor, "from")) {
       const specifier = readImportSpecifier(source, cursor + "from".length);
-      return specifier?.value === "express" ? source.slice(clauseStart, cursor) : null;
+      if (specifier === null) {
+        cursor += "from".length;
+        continue;
+      }
+      return specifier.value === "express" ? source.slice(clauseStart, cursor) : null;
     }
     cursor += 1;
   }

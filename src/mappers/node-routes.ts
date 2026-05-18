@@ -499,16 +499,77 @@ function fastifyParameterTargets(source: string): Set<string> {
   return names;
 }
 
-function hasFastifyPluginImport(source: string): boolean {
-  const pattern =
-    /\b(?:from\s*["']fastify-plugin["']|require\s*\(\s*["']fastify-plugin["']\s*\))/gu;
-  pattern.lastIndex = 0;
-  for (const match of source.matchAll(pattern)) {
-    if (!isInsideCommentOrString(source, match.index ?? 0)) {
-      return true;
+function fastifyPluginCallTargetNames(source: string): Set<string> {
+  const names = new Set<string>();
+  for (const clause of fastifyPluginImportClauses(source)) {
+    addFastifyPluginImportNames(names, clause);
+  }
+  for (const pattern of [
+    /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*[^=;]+)?\s*=\s*require\s*\(\s*["']fastify-plugin["']\s*\)(?:\s*\.\s*default)?/gu,
+    /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\s*\(\s*["']fastify-plugin["']\s*\)/gu,
+  ]) {
+    pattern.lastIndex = 0;
+    for (const match of source.matchAll(pattern)) {
+      if (isInsideCommentOrString(source, match.index ?? 0)) {
+        continue;
+      }
+      const name = match[1];
+      if (name !== undefined) {
+        names.add(name);
+      }
     }
   }
-  return false;
+  return names;
+}
+
+function fastifyPluginImportClauses(source: string): string[] {
+  const clauses: string[] = [];
+  const pattern = /\bimport\b/gu;
+  pattern.lastIndex = 0;
+  for (const match of source.matchAll(pattern)) {
+    const importIndex = match.index ?? 0;
+    if (
+      isInsideCommentOrString(source, importIndex) ||
+      !isImportDeclarationStart(source, importIndex)
+    ) {
+      continue;
+    }
+    const clause = readStaticImportClause(source, importIndex, "fastify-plugin");
+    if (clause !== null) {
+      clauses.push(clause);
+    }
+  }
+  return clauses;
+}
+
+function addFastifyPluginImportNames(names: Set<string>, clause: string): void {
+  const namespace = /^\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/u.exec(clause.trim())?.[1];
+  if (namespace !== undefined) {
+    names.add(namespace);
+    return;
+  }
+
+  const defaultName = /^([A-Za-z_$][A-Za-z0-9_$]*)\b/u.exec(clause.trim())?.[1];
+  if (defaultName !== undefined && defaultName !== "type") {
+    names.add(defaultName);
+  }
+
+  const named = /\{([^}]*)\}/u.exec(clause)?.[1];
+  if (named === undefined) {
+    return;
+  }
+  for (const part of named.split(",")) {
+    const binding = part.trim();
+    if (binding.startsWith("type ")) {
+      continue;
+    }
+    const match = /^(?:default|fastifyPlugin)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u.exec(
+      binding,
+    );
+    if (match !== null) {
+      names.add(match[1] ?? binding);
+    }
+  }
 }
 
 function hasFastifyInstanceImport(source: string): boolean {
@@ -531,6 +592,14 @@ function hasFastifyInstanceImport(source: string): boolean {
 }
 
 function readFastifyStaticImportClause(source: string, importIndex: number): string | null {
+  return readStaticImportClause(source, importIndex, "fastify");
+}
+
+function readStaticImportClause(
+  source: string,
+  importIndex: number,
+  moduleName: string,
+): string | null {
   let cursor = importIndex + "import".length;
   cursor = skipWhitespaceAndComments(source, cursor);
   if (
@@ -573,7 +642,7 @@ function readFastifyStaticImportClause(source: string, importIndex: number): str
         cursor += "from".length;
         continue;
       }
-      return specifier.value === "fastify" ? source.slice(clauseStart, cursor) : null;
+      return specifier.value === moduleName ? source.slice(clauseStart, cursor) : null;
     }
     cursor += 1;
   }
@@ -581,7 +650,7 @@ function readFastifyStaticImportClause(source: string, importIndex: number): str
 }
 
 function fastifyScopedCallbackRoutes(source: string, filePath: string): ServerRoute[] {
-  const hasPluginImport = hasFastifyPluginImport(source);
+  const pluginCallTargets = fastifyPluginCallTargetNames(source);
   const hasInstanceImport = hasFastifyInstanceImport(source);
   const routes: ServerRoute[] = [];
   for (const callback of [
@@ -592,9 +661,9 @@ function fastifyScopedCallbackRoutes(source: string, filePath: string): ServerRo
     for (const parameter of callback.parameters) {
       if (
         isFastifyInstanceParameter(parameter.source, hasInstanceImport) ||
-        (hasPluginImport &&
+        (pluginCallTargets.size > 0 &&
           isCommonFastifyPluginParameterName(parameter.name) &&
-          isInsideFastifyPluginCall(source, callback.index))
+          isInsideFastifyPluginCall(source, callback.index, pluginCallTargets))
       ) {
         targets.add(parameter.name);
       }
@@ -688,7 +757,7 @@ function functionParameterCallbacks(source: string): Array<{
     const matchIndex = match.index ?? 0;
     addFunctionParameterCallback(callbacks, source, matchIndex, match[0].length, match[1]);
   }
-  const arrowPattern = /(^|[^A-Za-z0-9_$])((?:async\s*)?\(([^)]*)\)\s*(?::\s*[^=]+?)?=>)/gu;
+  const arrowPattern = /(^|[^A-Za-z0-9_$])((?:async\s*)?\(([^()]*)\)\s*(?::\s*[^=]+?)?=>)/gu;
   arrowPattern.lastIndex = 0;
   for (const match of source.matchAll(arrowPattern)) {
     const prefixLength = match[1]?.length ?? 0;
@@ -746,9 +815,14 @@ function isFastifyInstanceParameter(parameter: string, hasInstanceImport: boolea
   );
 }
 
-function isInsideFastifyPluginCall(source: string, functionIndex: number): boolean {
+function isInsideFastifyPluginCall(
+  source: string,
+  functionIndex: number,
+  pluginCallTargets: ReadonlySet<string>,
+): boolean {
   const prefix = source.slice(Math.max(0, functionIndex - 120), functionIndex);
-  return /\bfastifyPlugin\s*\(\s*$/u.test(prefix);
+  const targetPattern = [...pluginCallTargets].map(escapeRegExp).join("|");
+  return new RegExp(`\\b(?:${targetPattern})${genericArguments}\\s*\\(\\s*$`, "u").test(prefix);
 }
 
 function isCommonFastifyPluginParameterName(name: string): boolean {

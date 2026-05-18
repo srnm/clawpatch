@@ -352,7 +352,7 @@ function expressRouterImportBindingNames(source: string): Set<string> {
 
 function readExpressStaticImportClause(source: string, importIndex: number): string | null {
   let cursor = importIndex + "import".length;
-  cursor = skipWhitespace(source, cursor);
+  cursor = skipWhitespaceAndComments(source, cursor);
   if (
     source[cursor] === "(" ||
     source[cursor] === "." ||
@@ -548,6 +548,23 @@ function skipWhitespace(source: string, start: number): number {
   let cursor = start;
   while (/\s/u.test(source[cursor] ?? "")) {
     cursor += 1;
+  }
+  return cursor;
+}
+
+function skipWhitespaceAndComments(source: string, start: number): number {
+  let cursor = start;
+  while (cursor < source.length) {
+    const next = skipWhitespace(source, cursor);
+    if (source[next] === "/" && source[next + 1] === "*") {
+      cursor = skipBlockComment(source, next + 2);
+      continue;
+    }
+    if (source[next] === "/" && source[next + 1] === "/") {
+      cursor = skipLineComment(source, next + 2);
+      continue;
+    }
+    return next;
   }
   return cursor;
 }

@@ -148,6 +148,7 @@ export async function mapCommand(
     source,
     provider,
     providerOptions: providerOptions(config),
+    inventory: { include: config.include, exclude: config.exclude },
     onProgress: (event, fields) => {
       emitProgress(context, "map", event, fields);
     },

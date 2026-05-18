@@ -4,6 +4,7 @@ import { ClawpatchError } from "./errors.js";
 import { Provider, ProviderOptions } from "./provider.js";
 import { AgentMapOutput, FeatureRecord, ProjectRecord } from "./types.js";
 import { pathExists } from "./fs.js";
+import { runCommandArgs } from "./exec.js";
 import { mapFeatureSeeds, MapResult } from "./mapper.js";
 import { FeatureSeed, SeedFileRef, SeedTestRef } from "./mappers/types.js";
 import { isSafeFile, normalize, shouldSkip, walk } from "./mappers/shared.js";
@@ -25,7 +26,13 @@ type AgentMapOptions = {
   source: AgentMapMode;
   provider: Provider | null;
   providerOptions: ProviderOptions;
+  inventory?: InventoryFilters;
   onProgress?: (event: string, fields: Record<string, string | number | boolean>) => void;
+};
+
+type InventoryFilters = {
+  include: string[];
+  exclude: string[];
 };
 
 type RepoInventorySummary = {
@@ -110,7 +117,7 @@ export async function mapWithSource(
 ): Promise<AgentMapResult> {
   const inventoryStarted = Date.now();
   options.onProgress?.("inventory-start", {});
-  const inventory = await repoInventory(root, project, heuristic.features);
+  const inventory = await repoInventory(root, project, heuristic.features, options.inventory);
   options.onProgress?.("inventory-done", {
     files: inventory.files,
     sourceFiles: inventory.sourceFiles,
@@ -378,8 +385,15 @@ async function repoInventory(
   root: string,
   project: ProjectRecord,
   features: FeatureRecord[],
+  filters: InventoryFilters | undefined,
 ): Promise<RepoInventory> {
-  const files = await walk(root, [""], await inventorySkipPath(root, project, features));
+  const skipPath = await inventorySkipPath(root, project, features);
+  const files = applyInventoryFilters(
+    ((await gitInventoryFiles(root)) ?? (await walk(root, [""], skipPath))).filter(
+      (path) => !skipPath(path),
+    ),
+    filters,
+  );
   const sourceFiles = files.filter(isSourceFile).filter((path) => !isTestFile(path));
   const testFiles = files.filter(isTestFile);
   const ownedSource = new Set(
@@ -404,6 +418,96 @@ async function repoInventory(
     sourceFileSamples: sourceFiles.slice(0, 500),
     testFileSamples: testFiles.slice(0, 200),
   };
+}
+
+async function gitInventoryFiles(root: string): Promise<string[] | null> {
+  const result = await runCommandArgs(
+    "git",
+    ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    root,
+    undefined,
+    { trimOutput: false },
+  );
+  if (result.exitCode !== 0) {
+    return null;
+  }
+  const paths = uniqueStrings(
+    result.stdout
+      .split("\0")
+      .map((path) => normalize(path).replace(/\\/gu, "/"))
+      .filter(isInventoryPath),
+  );
+  const existing = await Promise.all(
+    paths.map(async (path) => ((await pathExists(join(root, path))) ? path : null)),
+  );
+  return existing.filter((path): path is string => path !== null);
+}
+
+function applyInventoryFilters(files: string[], filters: InventoryFilters | undefined): string[] {
+  if (filters === undefined) {
+    return files;
+  }
+  return files.filter(
+    (file) =>
+      filters.include.some((pattern) => inventoryPatternMatches(pattern, file)) &&
+      !filters.exclude.some((pattern) => inventoryPatternMatches(pattern, file)),
+  );
+}
+
+function isInventoryPath(path: string): boolean {
+  return (
+    path.length > 0 && !isAbsolute(path) && !path.includes("\0") && !path.split("/").includes("..")
+  );
+}
+
+function inventoryPatternMatches(pattern: string, path: string): boolean {
+  const normalized = pattern.replace(/\\/gu, "/").replace(/^\.\//u, "");
+  if (normalized === "**" || normalized === "**/*") {
+    return true;
+  }
+  if (normalized.length === 0) {
+    return false;
+  }
+  if (!/[?*]/u.test(normalized)) {
+    return path === normalized || path.startsWith(`${normalized}/`);
+  }
+  if (normalized.endsWith("/**")) {
+    const prefix = normalized.slice(0, -3);
+    if (/[?*]/u.test(prefix)) {
+      return new RegExp(`^${globPatternRegExp(prefix)}(?:/.*)?$`, "u").test(path);
+    }
+    return prefix.length === 0 || path === prefix || path.startsWith(`${prefix}/`);
+  }
+  return new RegExp(`^${globPatternRegExp(normalized)}$`, "u").test(path);
+}
+
+function globPatternRegExp(pattern: string): string {
+  let source = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        if (pattern[index + 2] === "/") {
+          source += "(?:.*/)?";
+          index += 2;
+        } else {
+          source += ".*";
+          index += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += regexpEscape(char ?? "");
+    }
+  }
+  return source;
+}
+
+function regexpEscape(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
 }
 
 async function inventorySkipPath(

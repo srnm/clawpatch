@@ -1274,6 +1274,57 @@ describe("workflow", () => {
     expect(agentFeature?.tests).toEqual([{ path: "agent/worker.test.custom", command: null }]);
   });
 
+  it("builds agent mapper inventory from git-visible files and config filters", async () => {
+    const root = await fixtureRoot("clawpatch-agent-map-git-inventory-");
+    await writeFixture(
+      root,
+      "clawpatch.config.json",
+      JSON.stringify({
+        ...defaultConfig(),
+        include: ["**/*"],
+        exclude: ["ignored/**", "**/generated/**"],
+      }),
+    );
+    await writeFixture(root, ".gitignore", "gitignored/\n");
+    await writeFixture(root, "agent/worker.custom", "worker source\n");
+    await writeFixture(root, "agent/worker.test.custom", "worker test\n");
+    await writeFixture(root, "agent/deleted.custom", "deleted source\n");
+    await writeFixture(root, "ignored/agent/by-config.custom", "config excluded\n");
+    await writeFixture(root, "packages/app/generated/agent/by-glob.custom", "glob excluded\n");
+    await writeFixture(root, "gitignored/agent/by-git.custom", "git ignored\n");
+    await writeFixture(root, ".claude/worktrees/child/agent/ghost.custom", "nested worktree\n");
+    await initGit(root);
+    await checkCommand(root, "git add agent/deleted.custom");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "track deleted file"');
+    await unlink(join(root, "agent/deleted.custom"));
+    await checkCommand(root, "git init -q .claude/worktrees/child");
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    await mapCommand(context, {
+      source: "agent",
+      provider: "mock",
+    });
+    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const agentFeature = features.find((feature) => feature.source === "agent-mapper");
+
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).toEqual(["agent/worker.custom"]);
+    expect(agentFeature?.tests).toEqual([{ path: "agent/worker.test.custom", command: null }]);
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).not.toContain(
+      "ignored/agent/by-config.custom",
+    );
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).not.toContain(
+      "packages/app/generated/agent/by-glob.custom",
+    );
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).not.toContain("agent/deleted.custom");
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).not.toContain(
+      "gitignored/agent/by-git.custom",
+    );
+    expect(agentFeature?.ownedFiles.map((file) => file.path)).not.toContain(
+      ".claude/worktrees/child/agent/ghost.custom",
+    );
+  });
+
   it("does not invoke agent mapping for meaningful Elixir heuristic coverage", async () => {
     const root = await fixtureRoot("clawpatch-elixir-auto-map-");
     await writeFixture(
@@ -1347,6 +1398,7 @@ describe("workflow", () => {
     await writeFixture(root, "CMakeLists.txt", "project(unsupported)\n");
     await writeFixture(root, "deps/agent/worker.custom", "dependency agent source\n");
     await writeFixture(root, "deps/native/noise.c", "int noise(void) { return 0; }\n");
+    await initGit(root);
     const context = await makeContext(testOptions(root));
 
     await initCommand(context, {});

@@ -327,6 +327,53 @@ describe("mapFeatures", () => {
     ]);
   });
 
+  it("uses bun workspace commands when the root has a text bun lockfile", async () => {
+    const root = await fixtureRoot("clawpatch-task-graph-bun-lock-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "workspace-root",
+          packageManager: "bun@1.3.3",
+          workspaces: ["apps/*"],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(root, "bun.lock", "");
+    await writeFixture(
+      root,
+      "apps/web/package.json",
+      JSON.stringify(
+        {
+          name: "web",
+          scripts: { test: "vitest run", build: "next build" },
+          dependencies: { next: "1.0.0" },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "apps/web/app/page.tsx",
+      "export default function Page() { return null; }\n",
+    );
+    await writeFixture(root, "apps/web/app/page.test.tsx", "test('page', () => {});\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const route = result.features.find((feature) => feature.title === "web route /");
+
+    expect(project.detected.packageManagers).toContain("bun");
+    expect(project.detected.commands.test).toBeNull();
+    expect(route?.tests).toEqual([
+      { path: "apps/web/app/page.test.tsx", command: "bun --cwd apps/web run test" },
+    ]);
+  });
+
   it("keeps Nx target commands on the workspace package manager", async () => {
     const root = await fixtureRoot("clawpatch-map-nx-root-package-manager-");
     await writeFixture(
@@ -1755,11 +1802,31 @@ describe("mapFeatures", () => {
       "src/server.ts",
       [
         "// route imports",
+        "import { Router as OtherRouter } from 'other-router';",
+        "/* import { Router as CommentedOutRouter } from 'express'; */",
+        "/* import banner */ import { Router as BannerRouter } from 'express';",
+        "/*",
+        " * multiline import banner",
+        " */ import { Router as MultilineBannerRouter } from 'express';",
+        "import unused from 'unused'; /* stacked */ /* import banner */ import { Router as SemicolonBannerRouter } from 'express';",
+        "import from, { Router as FromBindingRouter } from 'express';",
+        "import 'reflect-metadata'",
+        "import/* type banner */type { Router as CommentedTypeRouter } from 'express';",
         "import express, { Router, Router as ExpressRouter } from 'express';",
         "",
+        "const config = { import: true }",
+        "export type { Router as ExportedTypeRouter } from 'express';",
         "const app = express();",
+        "const otherRouter = OtherRouter();",
+        "const commentedOutRouter = CommentedOutRouter();",
         "const router = Router();",
         "const aliasRouter = ExpressRouter();",
+        "const bannerRouter = BannerRouter();",
+        "const multilineBannerRouter = MultilineBannerRouter();",
+        "const semicolonBannerRouter = SemicolonBannerRouter();",
+        "const fromBindingRouter = FromBindingRouter();",
+        "const commentedTypeRouter = CommentedTypeRouter();",
+        "const exportedTypeRouter = ExportedTypeRouter();",
         "const typedRouter: Router = Router();",
         "const projectRouter = Router({ mergeParams: true });",
         "let hitCount = 0;",
@@ -1770,8 +1837,16 @@ describe("mapFeatures", () => {
         "app.get('/anonymous', requireAuth, (_req, res) => res.send('ok'));",
         "app.get('/dynamic/' + version, dynamicRoute);",
         "app.all('/proxy', proxy);",
+        "otherRouter.get('/other-router', ignoredOtherRouter);",
+        "commentedOutRouter.get('/commented-out-router', ignoredCommentedOutRouter);",
         "router.post('/admin/jobs', createJob);",
         "aliasRouter.get('/aliased-router', listAliasedRouter);",
+        "bannerRouter.get('/banner-router', listBannerRouter);",
+        "multilineBannerRouter.get('/multiline-banner-router', listMultilineBannerRouter);",
+        "semicolonBannerRouter.get('/semicolon-banner-router', listSemicolonBannerRouter);",
+        "fromBindingRouter.get('/from-binding-router', listFromBindingRouter);",
+        "commentedTypeRouter.get('/commented-type-router', ignoredCommentedTypeRouter);",
+        "exportedTypeRouter.get('/exported-type-router', ignoredExportedTypeRouter);",
         "router.post<{ Body: CreateJob }>('/typed-jobs', createTypedJob);",
         "typedRouter.patch('/typed/:id', updateTyped);",
         "router.route('/users').get(listUsers).delete(deleteUsers);",
@@ -1789,8 +1864,16 @@ describe("mapFeatures", () => {
         "function showAdmin() {}",
         "function dynamicRoute() {}",
         "function proxy() {}",
+        "function ignoredOtherRouter() {}",
+        "function ignoredCommentedOutRouter() {}",
         "function createJob() {}",
         "function listAliasedRouter() {}",
+        "function listBannerRouter() {}",
+        "function listMultilineBannerRouter() {}",
+        "function listSemicolonBannerRouter() {}",
+        "function listFromBindingRouter() {}",
+        "function ignoredCommentedTypeRouter() {}",
+        "function ignoredExportedTypeRouter() {}",
         "function createTypedJob() {}",
         "function updateTyped() {}",
         "function listUsers() {}",
@@ -1964,6 +2047,10 @@ describe("mapFeatures", () => {
         "Express route ALL /proxy",
         "Express route POST /admin/jobs",
         "Express route GET /aliased-router",
+        "Express route GET /banner-router",
+        "Express route GET /multiline-banner-router",
+        "Express route GET /semicolon-banner-router",
+        "Express route GET /from-binding-router",
         "Express route GET /cjs-aliased-router",
         "Express route GET /assigned-router",
         "Express route GET /typed-assigned-router",
@@ -1990,6 +2077,10 @@ describe("mapFeatures", () => {
     expect(titles).not.toContain("Express route GET /regex-health");
     expect(titles).not.toContain("Express route GET /arrow-regex");
     expect(titles).not.toContain("Express route GET /returned-regex");
+    expect(titles).not.toContain("Express route GET /other-router");
+    expect(titles).not.toContain("Express route GET /commented-out-router");
+    expect(titles).not.toContain("Express route GET /commented-type-router");
+    expect(titles).not.toContain("Express route GET /exported-type-router");
     expect(titles).not.toContain("Express route GET /custom-import-router");
     expect(titles).not.toContain("Express route GET /custom-router");
     expect(titles).not.toContain("Express route GET /custom-alias-router");
@@ -3192,7 +3283,7 @@ describe("mapFeatures", () => {
 
   it("uses bun run for root React package scripts", async () => {
     const root = await fixtureRoot("clawpatch-react-root-bun-");
-    await writeFixture(root, "bun.lockb", "");
+    await writeFixture(root, "bun.lock", "");
     await writeFixture(
       root,
       "package.json",

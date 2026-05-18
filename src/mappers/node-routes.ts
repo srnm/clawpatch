@@ -335,17 +335,70 @@ function expressRouterFactoryNames(source: string): Set<string> {
 
 function expressRouterImportBindingNames(source: string): Set<string> {
   const names = new Set<string>();
-  const pattern =
-    /(?:^|[;\n])\s*import\s+(?!type\b)((?:(?!\n\s*import\b)[\s\S]){0,400}?)\bfrom\s*["']express["']/gu;
+  const pattern = /\bimport\b/gu;
   pattern.lastIndex = 0;
   for (const match of source.matchAll(pattern)) {
-    const importIndex = source.indexOf("import", match.index ?? 0);
-    if (importIndex < 0 || isInsideCommentOrString(source, importIndex)) {
+    const importIndex = match.index ?? 0;
+    if (isInsideCommentOrString(source, importIndex)) {
       continue;
     }
-    addExpressRouterImportNames(names, match[1] ?? "");
+    const clause = readExpressStaticImportClause(source, importIndex);
+    if (clause !== null) {
+      addExpressRouterImportNames(names, clause);
+    }
   }
   return names;
+}
+
+function readExpressStaticImportClause(source: string, importIndex: number): string | null {
+  let cursor = importIndex + "import".length;
+  cursor = skipWhitespaceAndComments(source, cursor);
+  if (
+    source[cursor] === "(" ||
+    source[cursor] === "." ||
+    source[cursor] === "'" ||
+    source[cursor] === '"' ||
+    (source.startsWith("type", cursor) && !isIdentifierChar(source[cursor + "type".length]))
+  ) {
+    return null;
+  }
+  if (!isImportClauseStart(source[cursor])) {
+    return null;
+  }
+  const clauseStart = cursor;
+  const limit = Math.min(source.length, importIndex + 500);
+  while (cursor < limit) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+    if (char === undefined) {
+      break;
+    }
+    if (char === ";") {
+      return null;
+    }
+    if (char === "/" && next === "/") {
+      cursor = skipLineComment(source, cursor + 2);
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      cursor = skipBlockComment(source, cursor + 2);
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      cursor = skipQuoted(source, cursor, char);
+      continue;
+    }
+    if (isKeywordAt(source, cursor, "from")) {
+      const specifier = readImportSpecifier(source, cursor + "from".length);
+      if (specifier === null) {
+        cursor += "from".length;
+        continue;
+      }
+      return specifier.value === "express" ? source.slice(clauseStart, cursor) : null;
+    }
+    cursor += 1;
+  }
+  return null;
 }
 
 function addExpressRouterImportNames(names: Set<string>, clause: string): void {
@@ -484,12 +537,104 @@ function expressChainMethods(source: string, start: number): string[] {
   return methods;
 }
 
+function isKeywordAt(source: string, index: number, keyword: string): boolean {
+  return (
+    source.startsWith(keyword, index) &&
+    !isIdentifierChar(source[index - 1]) &&
+    !isIdentifierChar(source[index + keyword.length])
+  );
+}
+
+function isIdentifierChar(char: string | undefined): boolean {
+  return char !== undefined && /[A-Za-z0-9_$]/u.test(char);
+}
+
+function isImportClauseStart(char: string | undefined): boolean {
+  return char !== undefined && (char === "{" || char === "*" || /[A-Za-z_$]/u.test(char));
+}
+
 function skipWhitespace(source: string, start: number): number {
   let cursor = start;
   while (/\s/u.test(source[cursor] ?? "")) {
     cursor += 1;
   }
   return cursor;
+}
+
+function skipWhitespaceAndComments(source: string, start: number): number {
+  let cursor = start;
+  while (cursor < source.length) {
+    const next = skipWhitespace(source, cursor);
+    if (source[next] === "/" && source[next + 1] === "*") {
+      cursor = skipBlockComment(source, next + 2);
+      continue;
+    }
+    if (source[next] === "/" && source[next + 1] === "/") {
+      cursor = skipLineComment(source, next + 2);
+      continue;
+    }
+    return next;
+  }
+  return cursor;
+}
+
+function skipLineComment(source: string, start: number): number {
+  const newline = source.indexOf("\n", start);
+  return newline < 0 ? source.length : newline + 1;
+}
+
+function skipBlockComment(source: string, start: number): number {
+  const close = source.indexOf("*/", start);
+  return close < 0 ? source.length : close + 2;
+}
+
+function skipQuoted(source: string, start: number, quote: string): number {
+  let cursor = start + 1;
+  let escaped = false;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === undefined) {
+      break;
+    }
+    if (escaped) {
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === quote) {
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function readImportSpecifier(source: string, start: number): { value: string; end: number } | null {
+  let cursor = skipWhitespace(source, start);
+  const quote = source[cursor];
+  if (quote !== "'" && quote !== '"') {
+    return null;
+  }
+  cursor += 1;
+  let value = "";
+  let escaped = false;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === undefined) {
+      break;
+    }
+    if (escaped) {
+      value += char;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === quote) {
+      return { value, end: cursor + 1 };
+    } else {
+      value += char;
+    }
+    cursor += 1;
+  }
+  return null;
 }
 
 function nextRouteValueDelimiter(source: string, start: number): string | null {

@@ -1067,7 +1067,7 @@ export async function openPrCommand(
     await checkedRun("git add", runCommandArgs("git", ["add", "--", ...gitFiles], git.root));
     await checkedRun(
       "git commit",
-      runCommandArgs("git", ["commit", "-m", title], git.root),
+      runCommandArgs("git", ["commit", "-m", title, "--", ...gitFiles], git.root),
     );
     const commit = await checkedRun(
       "git rev-parse",
@@ -1448,9 +1448,15 @@ async function assertPatchWorktree(
   }
   const status = await checkedRun(
     "git status",
-    runCommandArgs("git", ["status", "--porcelain", "--untracked-files=all"], gitRoot, undefined, {
-      trimOutput: false,
-    }),
+    runCommandArgs(
+      "git",
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      gitRoot,
+      undefined,
+      {
+        trimOutput: false,
+      },
+    ),
   );
   const dirty = gitStatusPaths(status.stdout);
   const statePrefix = gitRelativePathPrefix(gitRoot, stateDir);
@@ -1478,13 +1484,19 @@ async function assertPatchWorktree(
 }
 
 function gitStatusPaths(output: string): string[] {
-  return output
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 3)
-    .map((line) => line.slice(3))
-    .map((path) => path.split(" -> ").at(-1) ?? path)
-    .map(normalizePath);
+  const fields = output.split("\0").filter((field) => field.length > 0);
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index] ?? "";
+    if (field.length < 4) {
+      continue;
+    }
+    paths.push(field.slice(3));
+    if (/[RC]/u.test(field.slice(0, 2))) {
+      index += 1;
+    }
+  }
+  return paths.map(normalizePath);
 }
 
 function isStatePath(file: string, statePrefix: string): boolean {

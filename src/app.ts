@@ -1071,7 +1071,11 @@ export async function openPrCommand(
   const body = renderPatchPrBody(patch, linkedFindings);
   const gitFiles = gitRelativePatchFiles(git.root, loaded.root, patch.filesChanged);
   const draft = flags["draft"] === true;
-  const commands = plannedPrCommands(patch, branch, base, title, gitFiles, draft);
+  const branchExists =
+    flags["dryRun"] === true && patch.git.commitSha === null
+      ? await localBranchExists(git.root, branch)
+      : false;
+  const commands = plannedPrCommands(patch, branch, base, title, gitFiles, draft, branchExists);
   if (flags["dryRun"] === true) {
     return {
       dryRun: true,
@@ -1370,6 +1374,11 @@ function prBranchName(
   if (explicit !== undefined) {
     return explicit;
   }
+  if (base === null) {
+    return patch.git.branchName?.startsWith("clawpatch/") === true
+      ? patch.git.branchName
+      : `clawpatch/${patch.patchAttemptId}`;
+  }
   if (
     patch.git.branchName !== null &&
     patch.git.branchName !== base &&
@@ -1462,10 +1471,11 @@ function plannedPrCommands(
   title: string,
   gitFiles: string[],
   draft: boolean,
+  branchExists: boolean,
 ): string[] {
   const commands: string[] = [];
   if (patch.git.commitSha === null) {
-    commands.push(`git switch -c ${shellArg(branch)}`);
+    commands.push(branchExists ? `git switch ${shellArg(branch)}` : `git switch -c ${shellArg(branch)}`);
     commands.push(`git add -- ${gitFiles.map(shellArg).join(" ")}`);
     commands.push(`git commit -m ${shellArg(title)} -- ${gitFiles.map(shellArg).join(" ")}`);
   }

@@ -3324,7 +3324,7 @@ describe("workflow", () => {
       git: {
         baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
         commitSha: null,
-        branchName: null,
+        branchName: "develop",
         prUrl: null,
       },
       createdAt: now,
@@ -3700,12 +3700,23 @@ describe("workflow", () => {
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
+      const preview = (await openPrCommand(context, {
+        patch: "pat_open_pr_existing_branch",
+        base: "main",
+        dryRun: true,
+      })) as { commands: string[] };
       const opened = (await openPrCommand(context, {
         patch: "pat_open_pr_existing_branch",
         base: "main",
       })) as { branch: string; pr: string };
       const currentBranch = (await runCommand("git branch --show-current", root)).stdout.trim();
 
+      expect(preview.commands).toEqual(
+        expect.arrayContaining(["git switch clawpatch/pat_open_pr_existing_branch"]),
+      );
+      expect(preview.commands).toEqual(
+        expect.not.arrayContaining(["git switch -c clawpatch/pat_open_pr_existing_branch"]),
+      );
       expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1002");
       expect(opened.branch).toBe("clawpatch/pat_open_pr_existing_branch");
       expect(currentBranch).toBe("clawpatch/pat_open_pr_existing_branch");

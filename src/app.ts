@@ -32,7 +32,7 @@ import {
   renderFindingDetail,
   renderReport,
 } from "./reporting.js";
-import { validateReviewOutput } from "./review-validation.js";
+import { validateReviewOutputPartitioned } from "./review-validation.js";
 import {
   filterFeaturesByChangedFiles,
   filterFeaturesByProject,
@@ -344,11 +344,12 @@ export async function reviewCommand(
           });
           findingIds.push(...reviewed.findingIds);
           for (const dropped of reviewed.droppedFindings) {
+            const code = dropped.layer === "validation" ? "validation-drop" : "schema-drop";
             errors.push({
               message:
                 `dropped 1 finding from feature ${feature.featureId} ` +
                 `at ${dropped.path.join(".")}: ${dropped.message}`,
-              code: "schema-drop",
+              code,
               error: null,
             });
           }
@@ -362,7 +363,9 @@ export async function reviewCommand(
       }
     }),
   );
-  const fatalErrors = errors.filter((entry) => entry.code !== "schema-drop");
+  const fatalErrors = errors.filter(
+    (entry) => entry.code !== "schema-drop" && entry.code !== "validation-drop",
+  );
   if (fatalErrors.length > 0) {
     await writeRun(loaded.paths, {
       ...run,
@@ -693,7 +696,8 @@ async function reviewFeature(
       reviewPrompt.prompt,
       providerOptions(config),
     );
-    const droppedFindings: DroppedFinding[] = providerOutput.droppedFindings;
+    // Layer 1 drops: per-finding schema violations from parseReviewOutput.
+    const droppedFindings: DroppedFinding[] = [...providerOutput.droppedFindings];
     const reviewOutput = {
       findings: reviewFindingsForMode(providerOutput.findings, mode).slice(
         0,
@@ -701,14 +705,18 @@ async function reviewFeature(
       ),
       inspected: providerOutput.inspected,
     };
-    const output = await validateReviewOutput(
+    // Layer 2 drops: per-finding evidence validation (line ranges, quotes,
+    // included files). Partition so a single bad finding doesn't lose the
+    // whole feature.
+    const validated = await validateReviewOutputPartitioned(
       loaded.root,
       lockedFeature,
       config,
       reviewPrompt.manifest,
       reviewOutput,
     );
-    const records = output.findings.map((finding) =>
+    droppedFindings.push(...validated.droppedFindings);
+    const records = validated.findings.map((finding) =>
       findingFromOutput(finding, lockedFeature.featureId, currentRunId),
     );
     const findingIds: string[] = [];

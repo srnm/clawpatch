@@ -34,10 +34,20 @@ export type ProviderOptions = {
   skipGitRepoCheck: boolean;
 };
 
+/**
+ * One review finding rejected by per-finding validation. `layer` records
+ * which gate dropped it: `schema` is the per-finding `reviewFindingSchema`
+ * Zod parse, `validation` is the evidence/quote/line-range check in
+ * `validateReviewOutputPartitioned`. Operators can use `layer` to tell
+ * "the model emitted nonsense for this finding" (schema) apart from
+ * "the model cited a real-looking finding but pointed at the wrong file
+ * or quoted text that isn't there" (validation).
+ */
 export type DroppedFinding = {
   path: (string | number)[];
   message: string;
   sample: string;
+  layer?: "schema" | "validation";
 };
 
 export type PartitionedReviewOutput = {
@@ -110,6 +120,7 @@ export function parseReviewOutput(output: unknown): PartitionedReviewOutput {
       path: ["findings", idx, ...issuePath],
       message: issue?.message ?? "invalid finding shape",
       sample: truncateSample(candidate),
+      layer: "schema",
     });
   });
 

@@ -64,7 +64,8 @@ validation commands and records a patch attempt under `.clawpatch/`.
 - React Router routes and React components
 - Go package slices from `go list ./...`, including command packages
 - Go package tests and same-repo imports as review context
-- Java/Kotlin Gradle source groups and root Gradle build/test commands
+- Java/Kotlin Gradle source groups, Maven source groups, and root Gradle/Maven
+  build/test commands
 - JVM semantic roles from Java and Kotlin code evidence such as annotations,
   imports, interfaces, inheritance, supertypes, and method signatures
 - Kotlin Android semantic roles for UI entrypoints, ViewModels, data

@@ -55,6 +55,10 @@ import { fixtureRoot, testOptions, writeFixture } from "./test-helpers.js";
 import { findingRecordSchema } from "./types.js";
 import type { FeatureRecord, PatchAttempt } from "./types.js";
 
+const symlinkIt = process.platform === "win32" ? it.skip : it;
+const posixFileModeIt = process.platform === "win32" ? it.skip : it;
+const posixPathspecIt = process.platform === "win32" ? it.skip : it;
+
 async function sinceFixture(prefix: string): Promise<string> {
   const root = await fixtureRoot(prefix);
   await writeFixture(
@@ -135,6 +139,32 @@ async function checkCommand(root: string, command: string): Promise<void> {
   if (result.exitCode !== 0) {
     throw new Error(`${command} failed: ${result.stderr || result.stdout}`);
   }
+}
+
+async function writeGhSuccessScript(root: string, url: string): Promise<string> {
+  if (process.platform === "win32") {
+    const path = "success-gh.cmd";
+    await writeFixture(root, path, `@echo off\r\necho ${url}\r\n`);
+    return join(root, path);
+  }
+  const path = "success-gh.sh";
+  const fullPath = join(root, path);
+  await writeFixture(root, path, `#!/bin/sh\necho ${url}\n`);
+  await chmod(fullPath, 0o755);
+  return fullPath;
+}
+
+async function writeGhFailureScript(root: string): Promise<string> {
+  if (process.platform === "win32") {
+    const path = "fail-gh.cmd";
+    await writeFixture(root, path, "@echo off\r\nexit /b 42\r\n");
+    return join(root, path);
+  }
+  const path = "fail-gh.sh";
+  const fullPath = join(root, path);
+  await writeFixture(root, path, "#!/bin/sh\nexit 42\n");
+  await chmod(fullPath, 0o755);
+  return fullPath;
 }
 
 async function runCli(argv: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -1716,7 +1746,7 @@ describe("workflow", () => {
     );
   });
 
-  it("does not recurse through symlinked mapper directories", async () => {
+  symlinkIt("does not recurse through symlinked mapper directories", async () => {
     const root = await fixtureRoot("clawpatch-map-symlink-root-");
     const external = await fixtureRoot("clawpatch-map-symlink-external-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "map-symlink" }));
@@ -2336,7 +2366,7 @@ describe("workflow", () => {
     expect(patches[0]?.filesChanged).toEqual(["scratch/note.txt"]);
   });
 
-  it("records mode-only changes to already-dirty files", async () => {
+  posixFileModeIt("records mode-only changes to already-dirty files", async () => {
     const root = await fixtureRoot("clawpatch-fix-dirty-mode-");
     await initGit(root);
     await checkCommand(root, "git config core.filemode true");
@@ -2387,7 +2417,7 @@ describe("workflow", () => {
     expect(patches[0]?.filesChanged).toEqual(["script.sh"]);
   });
 
-  it("fingerprints dirty symlinks without reading external targets", async () => {
+  symlinkIt("fingerprints dirty symlinks without reading external targets", async () => {
     const root = await fixtureRoot("clawpatch-fix-dirty-symlink-");
     const external = await fixtureRoot("clawpatch-fix-dirty-symlink-external-");
     const externalPath = join(external, "target.txt");
@@ -3123,7 +3153,7 @@ describe("workflow", () => {
     }
   });
 
-  it("does not include escaped feature paths in prompts", async () => {
+  symlinkIt("does not include escaped feature paths in prompts", async () => {
     const root = await fixtureRoot("clawpatch-path-escape-");
     const siblingSecret = join(root, "..", "secret.txt");
     await writeFixture(root, "package.json", JSON.stringify({ name: "path-escape" }));
@@ -3429,7 +3459,7 @@ describe("workflow", () => {
     });
   });
 
-  it("opens PRs from symlinked project roots with repo-relative patch paths", async () => {
+  symlinkIt("opens PRs from symlinked project roots with repo-relative patch paths", async () => {
     const root = await fixtureRoot("clawpatch-open-pr-symlink-root-");
     const projectRoot = join(root, "packages/app");
     await writeFixture(
@@ -3482,13 +3512,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-symlink-root-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1004\n",
+      "https://github.com/openclaw/clawpatch/pull/1004",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -3517,7 +3544,7 @@ describe("workflow", () => {
     }
   });
 
-  it("opens PRs for newly created dangling symlinks", async () => {
+  symlinkIt("opens PRs for newly created dangling symlinks", async () => {
     const root = await fixtureRoot("clawpatch-open-pr-symlink-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-symlink" }));
     await initGit(root);
@@ -3561,13 +3588,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-symlink-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1003\n",
+      "https://github.com/openclaw/clawpatch/pull/1003",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -3622,9 +3646,7 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-existing-url-gh-");
-    const failingGh = join(ghScripts, "fail-gh.sh");
-    await writeFixture(ghScripts, "fail-gh.sh", "#!/bin/sh\nexit 42\n");
-    await chmod(failingGh, 0o755);
+    const failingGh = await writeGhFailureScript(ghScripts);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = failingGh;
@@ -3697,16 +3719,11 @@ describe("workflow", () => {
     };
     await writePatchAttempt(paths, patch);
     const ghScripts = await fixtureRoot("clawpatch-open-pr-gh-");
-    const failingGh = join(ghScripts, "fail-gh.sh");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(ghScripts, "fail-gh.sh", "#!/bin/sh\nexit 42\n");
-    await writeFixture(
+    const failingGh = await writeGhFailureScript(ghScripts);
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/999\n",
+      "https://github.com/openclaw/clawpatch/pull/999",
     );
-    await chmod(failingGh, 0o755);
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = failingGh;
@@ -3812,13 +3829,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-recorded-base-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1005\n",
+      "https://github.com/openclaw/clawpatch/pull/1005",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -3894,13 +3908,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-existing-branch-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1002\n",
+      "https://github.com/openclaw/clawpatch/pull/1002",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -3983,13 +3994,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-pathspec-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1000\n",
+      "https://github.com/openclaw/clawpatch/pull/1000",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -4013,7 +4021,7 @@ describe("workflow", () => {
     }
   });
 
-  it("opens PRs for literal names that look like git pathspec magic", async () => {
+  posixPathspecIt("opens PRs for literal names that look like git pathspec magic", async () => {
     const root = await fixtureRoot("clawpatch-open-pr-literal-pathspec-");
     await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-literal-pathspec" }));
     await writeFixture(root, "README.md", "base\n");
@@ -4058,13 +4066,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-literal-pathspec-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1002\n",
+      "https://github.com/openclaw/clawpatch/pull/1002",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;
@@ -4140,13 +4145,10 @@ describe("workflow", () => {
       updatedAt: now,
     });
     const ghScripts = await fixtureRoot("clawpatch-open-pr-rename-gh-");
-    const successGh = join(ghScripts, "success-gh.sh");
-    await writeFixture(
+    const successGh = await writeGhSuccessScript(
       ghScripts,
-      "success-gh.sh",
-      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1001\n",
+      "https://github.com/openclaw/clawpatch/pull/1001",
     );
-    await chmod(successGh, 0o755);
     const previousGh = process.env["CLAWPATCH_GH"];
     try {
       process.env["CLAWPATCH_GH"] = successGh;

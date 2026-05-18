@@ -57,6 +57,8 @@ Supported deterministic mappers today:
 - nested SwiftPM packages
 - Apple/Xcode projects from `project.yml`, `.xcodeproj`, or `.xcworkspace`
 - Java/Kotlin Gradle modules from `settings.gradle(.kts)` and `build.gradle(.kts)`
+- Java/Kotlin Maven modules from root and nested `pom.xml` files, including
+  multi-module projects
 - Laravel/PHP projects from `composer.json` and `artisan`, including controllers
   referenced by routes, form requests, Artisan commands, jobs, services, models,
   migrations, seeders, Composer scripts, and grouped PHP test suites
@@ -122,12 +124,15 @@ lazy import, and also maps page/component files under `src/pages` and
 `src/components` as UI-flow slices.
 Native app mappers use the same bounded grouping model. SwiftPM packages can be
 discovered below the repo root, Apple projects are grouped by Swift source area,
-and Gradle modules are grouped from `src/main`, `src/test`, and `src/androidTest`.
-Root Gradle projects get default `gradle`/`./gradlew` build and test commands.
-Java and Kotlin files in Gradle modules also get role-oriented review slices
-when code evidence identifies web entrypoints, services, persistence boundaries,
-external clients, configuration, framework components, extension boundaries,
-Android UI entrypoints, ViewModels, data boundaries, or dependency injection.
+Gradle modules are grouped from `src/main`, `src/test`, and `src/androidTest`,
+and Maven modules are grouped from `src/main` and `src/test`. Root Gradle
+projects get default `gradle`/`./gradlew` build and test commands; root Maven
+projects get default `mvn`/`./mvnw` compile and test commands.
+Java and Kotlin files in Gradle modules, plus Java files in Maven modules, also
+get role-oriented review slices when code evidence identifies web entrypoints,
+services, persistence boundaries, external clients, configuration, framework
+components, extension boundaries, Android UI entrypoints, ViewModels, data
+boundaries, or dependency injection.
 Kotlin dependency-injection evidence includes Hilt, Dagger, Koin, and Metro
 annotations and imports.
 

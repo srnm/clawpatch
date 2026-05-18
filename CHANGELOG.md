@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 - Unreleased
+## 0.3.0 - 2026-05-18
 
 - Added a `pi` provider for routing review, fix, revalidate, and agent map through the [pi coding agent](https://pi.dev) in non-interactive print mode, thanks @danielmarbach.
 - Added deslopify review mode and ranked maintainability/performance report clusters for repeated cleanup patterns, thanks @mbelinky.

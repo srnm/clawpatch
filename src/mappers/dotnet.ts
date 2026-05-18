@@ -153,7 +153,10 @@ function slnProjectPaths(source: string, solutionRoot: string): string[] {
 
 function slnxProjectPaths(source: string, solutionRoot: string): string[] {
   const paths: string[] = [];
-  for (const match of source.matchAll(/\bPath\s*=\s*["']([^"']+\.(?:cs|fs|vb)proj)["']/gimu)) {
+  const activeSource = stripXmlComments(source);
+  for (const match of activeSource.matchAll(
+    /\bPath\s*=\s*["']([^"']+\.(?:cs|fs|vb)proj)["']/gimu,
+  )) {
     const path = solutionProjectPath(solutionRoot, match[1] ?? "");
     if (path !== null) {
       paths.push(path);
@@ -1001,7 +1004,7 @@ function isDotnetSlnxPath(path: string): boolean {
 }
 
 function isDotnetConfigPath(path: string): boolean {
-  return /(^|\/)(global\.json|Directory\.(?:Build|Packages)\.(?:props|targets)|NuGet\.config|\.editorconfig)$/u.test(
+  return /(^|\/)(global\.json|Directory\.(?:Build|Packages)\.(?:props|targets)|\.editorconfig)$/u.test(
     path,
   );
 }

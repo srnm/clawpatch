@@ -13,6 +13,7 @@
 - Improved Node workspace mapping with richer package overview features, generic extension package context, semantic large-source splits, and stricter generated/build ownership hygiene.
 - Improved Kotlin JVM and Android semantic role mapping for Gradle projects, including Android plugin aliases, local type handling, comment/string parsing, and role fallback edges, thanks @mrmans0n.
 - Added C#/.NET detection, conservative `dotnet build` / `dotnet test` defaults, ASP.NET Core route mapping, C#/F#/Visual Basic source groups, and .NET test-project mapping including TUnit, thanks @SimonGuldager with ideas from @danielmarbach.
+- Fixed .NET mapping to avoid including `NuGet.config` in review context and to reject stale or commented solution project entries when choosing validation defaults.
 
 ## 0.2.0 - 2026-05-17
 

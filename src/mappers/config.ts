@@ -19,7 +19,6 @@ export async function configSeeds(root: string): Promise<FeatureSeed[]> {
     "Directory.Build.targets",
     "Directory.Packages.props",
     "Directory.Packages.targets",
-    "NuGet.config",
     "composer.json",
     "composer.lock",
     "phpunit.xml",

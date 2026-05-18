@@ -427,7 +427,7 @@ async function dotnetValidationTarget(root: string): Promise<string | null> {
     const solution = rootSolutions[0] ?? null;
     if (
       solution !== null &&
-      (await dotnetSolutionIncludesProjects(root, solution, solutionCoverageProjects))
+      (await dotnetSolutionIncludesProjects(root, solution, solutionCoverageProjects, projects))
     ) {
       return solution;
     }
@@ -440,7 +440,12 @@ async function dotnetValidationTarget(root: string): Promise<string | null> {
   if (
     rootSolutions.length === 0 &&
     solutions.length === 1 &&
-    (await dotnetSolutionIncludesProjects(root, solutions[0] ?? "", solutionCoverageProjects))
+    (await dotnetSolutionIncludesProjects(
+      root,
+      solutions[0] ?? "",
+      solutionCoverageProjects,
+      projects,
+    ))
   ) {
     return solutions[0] ?? null;
   }
@@ -459,8 +464,9 @@ async function dotnetSolutionCoverageProjects(root: string, projects: string[]):
 }
 
 async function dotnetTestTarget(root: string, buildTarget: string | null): Promise<string | null> {
+  const projects = await collectDotnetFiles(root, isDotnetProjectFileName, 5);
   const testProjects: string[] = [];
-  for (const project of await collectDotnetFiles(root, isDotnetProjectFileName, 5)) {
+  for (const project of projects) {
     const source = await readFile(join(root, project), "utf8").catch(() => "");
     if (isStrongDotnetTestProject(source)) {
       testProjects.push(project);
@@ -473,7 +479,7 @@ async function dotnetTestTarget(root: string, buildTarget: string | null): Promi
     buildTarget !== null &&
     (testProjects.includes(buildTarget) ||
       (isDotnetSolutionFileName(buildTarget) &&
-        (await dotnetSolutionIncludesProjects(root, buildTarget, testProjects))))
+        (await dotnetSolutionIncludesProjects(root, buildTarget, testProjects, projects))))
   ) {
     return buildTarget;
   }
@@ -484,25 +490,44 @@ async function dotnetSolutionIncludesProjects(
   root: string,
   solution: string,
   projects: string[],
+  knownProjects: string[],
 ): Promise<boolean> {
   const source = await readFile(join(root, solution), "utf8").catch(() => "");
-  const solutionProjects = new Set(dotnetSolutionProjectPaths(solution, source));
-  return projects.every((project) => solutionProjects.has(project));
+  const solutionProjects = dotnetSolutionProjectPaths(solution, source);
+  if (solutionProjects.invalid) {
+    return false;
+  }
+  const knownProjectSet = new Set(knownProjects);
+  const solutionProjectSet = new Set(solutionProjects.paths);
+  return (
+    solutionProjects.paths.every((project) => knownProjectSet.has(project)) &&
+    projects.every((project) => solutionProjectSet.has(project))
+  );
 }
 
-function dotnetSolutionProjectPaths(solution: string, source: string): string[] {
+function dotnetSolutionProjectPaths(
+  solution: string,
+  source: string,
+): {
+  paths: string[];
+  invalid: boolean;
+} {
   const solutionRoot = solution.includes("/") ? solution.slice(0, solution.lastIndexOf("/")) : ".";
   const paths: string[] = [];
+  let invalid = false;
+  const activeSource = isDotnetSlnxFileName(solution) ? stripXmlComments(source) : source;
   const pattern = isDotnetSlnxFileName(solution)
     ? /\bPath\s*=\s*["']([^"']+\.(?:cs|fs|vb)proj)["']/gimu
     : /^Project\([^)]+\)\s*=\s*"[^"]*"\s*,\s*"([^"]+\.(?:cs|fs|vb)proj)"/gimu;
-  for (const match of source.matchAll(pattern)) {
+  for (const match of activeSource.matchAll(pattern)) {
     const path = dotnetSolutionProjectPath(solutionRoot, match[1] ?? "");
     if (path !== null) {
       paths.push(path);
+    } else {
+      invalid = true;
     }
   }
-  return [...new Set(paths)];
+  return { paths: [...new Set(paths)], invalid };
 }
 
 function dotnetSolutionProjectPath(solutionRoot: string, path: string): string | null {

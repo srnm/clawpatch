@@ -13333,6 +13333,30 @@ public sealed class TodoController : ControllerBase
     expect(ownedFiles).not.toContain("src/Todo.Api/obj/Debug/net9.0/Todo.Api.AssemblyInfo.cs");
   });
 
+  it("does not map NuGet.config into review context", async () => {
+    const root = await fixtureRoot("clawpatch-dotnet-nuget-config-");
+    await writeFixture(
+      root,
+      "NuGet.config",
+      "<packageSourceCredentials>secret</packageSourceCredentials>\n",
+    );
+    await writeFixture(root, "App.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+    await writeFixture(root, "Program.cs", "public sealed class Program {}\n");
+
+    const result = await mapFeatures(root, await detectProject(root), []);
+    const referencedPaths = result.features.flatMap((feature) => [
+      feature.entrypoints[0]?.path,
+      ...feature.ownedFiles.map((file) => file.path),
+      ...feature.contextFiles.map((file) => file.path),
+      ...feature.tests.map((test) => test.path),
+    ]);
+
+    expect(result.features.map((feature) => feature.title)).not.toContain(
+      "Project config NuGet.config",
+    );
+    expect(referencedPaths).not.toContain("NuGet.config");
+  });
+
   it("preserves ASP.NET minimal API route group prefixes", async () => {
     const root = await fixtureRoot("clawpatch-dotnet-map-group-");
     await writeFixture(
@@ -13452,6 +13476,75 @@ EndProject
     const project = await detectProject(root);
 
     expect(project.detected.commands.typecheck).toBeNull();
+  });
+
+  it("does not build a .NET solution with stale project entries", async () => {
+    const root = await fixtureRoot("clawpatch-dotnet-solution-stale-project-");
+    await writeFixture(
+      root,
+      "App.sln",
+      `Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{00000000-0000-0000-0000-000000000000}") = "App", "src\\App\\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Project("{00000000-0000-0000-0000-000000000000}") = "Lib", "src\\Lib\\Lib.csproj", "{22222222-2222-2222-2222-222222222222}"
+EndProject
+Project("{00000000-0000-0000-0000-000000000000}") = "Missing", "src\\Missing\\Missing.csproj", "{33333333-3333-3333-3333-333333333333}"
+EndProject
+`,
+    );
+    await writeFixture(root, "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+    await writeFixture(root, "src/Lib/Lib.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+
+    const project = await detectProject(root);
+
+    expect(project.detected.commands.typecheck).toBeNull();
+  });
+
+  it("does not build a .NET solution with out-of-root project entries", async () => {
+    const root = await fixtureRoot("clawpatch-dotnet-solution-outside-project-");
+    await writeFixture(
+      root,
+      "App.sln",
+      `Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{00000000-0000-0000-0000-000000000000}") = "App", "src\\App\\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Project("{00000000-0000-0000-0000-000000000000}") = "Lib", "src\\Lib\\Lib.csproj", "{22222222-2222-2222-2222-222222222222}"
+EndProject
+Project("{00000000-0000-0000-0000-000000000000}") = "Outside", "..\\Outside\\Outside.csproj", "{33333333-3333-3333-3333-333333333333}"
+EndProject
+`,
+    );
+    await writeFixture(root, "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+    await writeFixture(root, "src/Lib/Lib.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+
+    const project = await detectProject(root);
+
+    expect(project.detected.commands.typecheck).toBeNull();
+  });
+
+  it("ignores commented .NET slnx project entries for validation targets", async () => {
+    const root = await fixtureRoot("clawpatch-dotnet-slnx-commented-project-");
+    await writeFixture(
+      root,
+      "App.slnx",
+      `<Solution>
+  <Project Path="src/App/App.csproj" />
+  <!-- <Project Path="src/Lib/Lib.csproj" /> -->
+</Solution>
+`,
+    );
+    await writeFixture(root, "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+    await writeFixture(root, "src/Lib/Lib.csproj", '<Project Sdk="Microsoft.NET.Sdk" />\n');
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const libProject = result.features.find((feature) => feature.title === ".NET project Lib");
+
+    expect(project.detected.commands.typecheck).toBeNull();
+    expect(libProject?.contextFiles).not.toContainEqual({
+      path: "App.slnx",
+      reason: "solution context",
+    });
   });
 
   it("prefers a root .NET project over an unrelated nested solution", async () => {

@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
 import {
@@ -239,6 +239,7 @@ export async function reviewCommand(
   const config = applyProviderFlags(loaded.config, flags);
   const provider = providerByName(config.provider.name);
   const mode = reviewMode(flags);
+  const customPrompt = await loadCustomReviewPrompt(flags);
   const features = await selectReviewFeatures(loaded, flags);
   if (features.length === 0 && typeof flags["since"] === "string") {
     if (flags["dryRun"] === true) {
@@ -303,6 +304,7 @@ export async function reviewCommand(
             index,
             total: features.length,
             mode,
+            customPrompt,
             allowNonPendingFeatureReview: stringFlag(flags, "feature") !== undefined,
           });
           findingIds.push(...reviewed.findingIds);
@@ -594,6 +596,7 @@ type ReviewFeatureOptions = {
   index: number;
   total: number;
   mode: ReviewMode;
+  customPrompt: string | null;
   allowNonPendingFeatureReview: boolean;
 };
 
@@ -608,6 +611,7 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
     index,
     total,
     mode,
+    customPrompt,
     allowNonPendingFeatureReview,
   } = options;
   const started = Date.now();
@@ -634,6 +638,7 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
       lockedFeature,
       config,
       mode,
+      customPrompt,
     );
     const output = await provider.review(loaded.root, prompt, providerOptions(config));
     const modeFindings = reviewFindingsForMode(output.findings, mode);
@@ -1199,6 +1204,39 @@ function reviewMode(flags: Record<string, string | boolean>): ReviewMode {
     return mode;
   }
   throw new ClawpatchError("invalid --mode; expected default or deslopify", 2, "invalid-usage");
+}
+
+async function loadCustomReviewPrompt(
+  flags: Record<string, string | boolean>,
+): Promise<string | null> {
+  const path = stringFlag(flags, "promptFile");
+  if (path === undefined) {
+    return null;
+  }
+  if (path === "" || path === "-") {
+    return readStdinToString();
+  }
+  try {
+    return await readFile(resolve(path), "utf8");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ClawpatchError(
+      `failed to read --prompt-file ${path}: ${message}`,
+      2,
+      "invalid-usage",
+    );
+  }
+}
+
+async function readStdinToString(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new ClawpatchError("--prompt-file=- requested but stdin is a TTY", 2, "invalid-usage");
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function reviewFindingsForMode(

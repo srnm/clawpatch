@@ -2601,6 +2601,124 @@ describe("workflow", () => {
     expect(prompt).toContain("do not report correctness, security, API contract");
   });
 
+  it("injects --prompt-file content into the review prompt", async () => {
+    const root = await fixtureRoot("clawpatch-prompt-file-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "prompt-file" }));
+    await writeFixture(root, "src/index.ts", "export function main() { return 1; }\n");
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    const project = await readProject(statePaths(join(root, ".clawpatch")));
+    expect(project).toBeDefined();
+    const promptWithCustom = await buildReviewPrompt(
+      root,
+      project!,
+      {
+        schemaVersion: 1,
+        featureId: "feat_prompt_file",
+        title: "prompt-file",
+        summary: "prompt-file",
+        kind: "library",
+        source: "test",
+        confidence: "high",
+        entrypoints: [{ path: "src/index.ts", symbol: null, route: null, command: null }],
+        ownedFiles: [{ path: "src/index.ts", reason: "test" }],
+        contextFiles: [],
+        tests: [],
+        tags: [],
+        trustBoundaries: [],
+        status: "pending",
+        lock: null,
+        findingIds: [],
+        patchAttemptIds: [],
+        analysisHistory: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      await loadConfig(root, testOptions(root)),
+      "default",
+      "Focus exclusively on race conditions and lock ordering bugs.",
+    );
+
+    expect(promptWithCustom).toContain(
+      "Additional reviewer guidance (provided via --prompt-file):",
+    );
+    expect(promptWithCustom).toContain(
+      "Focus exclusively on race conditions and lock ordering bugs.",
+    );
+    // Custom guidance must land before the JSON shape and file blocks so
+    // the model reads it as setup, not as part of the response template.
+    const guidanceIdx = promptWithCustom.indexOf("Additional reviewer guidance");
+    const jsonIdx = promptWithCustom.indexOf("JSON shape:");
+    expect(guidanceIdx).toBeGreaterThan(0);
+    expect(guidanceIdx).toBeLessThan(jsonIdx);
+  });
+
+  it("leaves the review prompt unchanged when --prompt-file is omitted", async () => {
+    const root = await fixtureRoot("clawpatch-prompt-file-omit-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "prompt-file-omit" }));
+    await writeFixture(root, "src/index.ts", "export function main() { return 1; }\n");
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    const project = await readProject(statePaths(join(root, ".clawpatch")));
+    expect(project).toBeDefined();
+    const baseline = await buildReviewPrompt(
+      root,
+      project!,
+      {
+        schemaVersion: 1,
+        featureId: "feat_prompt_file_omit",
+        title: "prompt-file-omit",
+        summary: "prompt-file-omit",
+        kind: "library",
+        source: "test",
+        confidence: "high",
+        entrypoints: [{ path: "src/index.ts", symbol: null, route: null, command: null }],
+        ownedFiles: [{ path: "src/index.ts", reason: "test" }],
+        contextFiles: [],
+        tests: [],
+        tags: [],
+        trustBoundaries: [],
+        status: "pending",
+        lock: null,
+        findingIds: [],
+        patchAttemptIds: [],
+        analysisHistory: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      await loadConfig(root, testOptions(root)),
+    );
+
+    expect(baseline).not.toContain("Additional reviewer guidance");
+  });
+
+  it("parses --prompt-file as a review value flag", () => {
+    expect(parseArgs(["review", "--prompt-file", "/tmp/foo.md"]).flags).toMatchObject({
+      promptFile: "/tmp/foo.md",
+    });
+  });
+
+  it("runs review --prompt-file through the CLI entrypoint", async () => {
+    const root = await fixtureRoot("clawpatch-prompt-file-cli-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "prompt-file-cli" }));
+
+    await runCli(["--root", root, "--json", "--quiet", "init"]);
+
+    await expect(
+      runCli([
+        "--root",
+        root,
+        "--json",
+        "--quiet",
+        "review",
+        "--prompt-file",
+        join(root, "missing.md"),
+      ]),
+    ).rejects.toThrow("failed to read --prompt-file");
+  });
+
   it("writes a tribunal-shaped JSONL ledger when --export-tribunal-ledger is set", async () => {
     const root = await fixtureRoot("clawpatch-export-tribunal-");
     await writeFixture(

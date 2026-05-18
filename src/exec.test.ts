@@ -31,6 +31,14 @@ describe("runCommandArgs", () => {
     expect(result.stderr).toContain("clawpatch-missing-executable-for-test");
   });
 
+  it("does not surface EPIPE when a child exits before reading stdin", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clawpatch-exec-stdin-"));
+    const input = "x".repeat(1_000_000);
+    const result = await runCommandArgs(process.execPath, ["-e", "process.exit(0)"], dir, input);
+
+    expect(result.exitCode).toBe(0);
+  });
+
   it("terminates commands that exceed a timeout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "clawpatch-exec-timeout-"));
     const script = join(dir, "hang.mjs");

@@ -1119,12 +1119,18 @@ export async function openPrCommand(
   let commitSha = patch.git.commitSha;
   const hadRecordedCommit = commitSha !== null;
   if (commitSha === null) {
+    const patchBaseSha = assertDefined(patch.git.baseSha, "missing patch base");
+    const targetBranchExists = await localBranchExists(git.root, branch);
+    if (targetBranchExists) {
+      await assertRefAtPatchBase(git.root, branch, patch);
+    }
     if (git.currentBranch !== branch) {
-      const switchArgs = (await localBranchExists(git.root, branch))
+      const switchArgs = targetBranchExists
         ? ["switch", branch]
-        : ["switch", "-c", branch];
+        : ["switch", "-c", branch, patchBaseSha];
       await checkedRun("git switch", runCommandArgs("git", switchArgs, git.root));
     }
+    await assertRefAtPatchBase(git.root, "HEAD", patch);
     const stagePlan = await patchStagePlan(git.root, patchWorktree);
     if (stagePlan.addFiles.length > 0) {
       await checkedRun(
@@ -1528,11 +1534,14 @@ function plannedPrCommands(
 ): string[] {
   const commands: string[] = [];
   if (patch.git.commitSha === null) {
+    const patchBaseSha = assertDefined(patch.git.baseSha, "missing patch base");
     const commitFiles = stagePlan?.commitFiles ?? gitFiles;
     const addFiles = stagePlan?.addFiles ?? gitFiles;
     const updateFiles = stagePlan?.updateFiles ?? [];
     commands.push(
-      branchExists ? `git switch ${shellArg(branch)}` : `git switch -c ${shellArg(branch)}`,
+      branchExists
+        ? `git switch ${shellArg(branch)}`
+        : `git switch -c ${shellArg(branch)} ${shellArg(patchBaseSha)}`,
     );
     if (addFiles.length > 0) {
       commands.push(`git add -- ${shellPathspecArgs(addFiles)}`);
@@ -1733,6 +1742,25 @@ async function localBranchExists(gitRoot: string, branch: string): Promise<boole
     gitRoot,
   );
   return result.exitCode === 0;
+}
+
+async function assertRefAtPatchBase(
+  gitRoot: string,
+  ref: string,
+  patch: PatchAttempt,
+): Promise<void> {
+  const head = await checkedRun(
+    "git rev-parse",
+    runCommandArgs("git", ["rev-parse", ref], gitRoot),
+  );
+  const sha = head.stdout.trim();
+  if (sha !== patch.git.baseSha) {
+    const message = [
+      `patch attempt ${patch.patchAttemptId} was recorded from ${patch.git.baseSha},`,
+      `but ${ref} is ${sha}`,
+    ].join(" ");
+    throw new ClawpatchError(message, 2, "invalid-input");
+  }
 }
 
 function firstUrl(output: string): string | null {

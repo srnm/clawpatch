@@ -31,6 +31,14 @@ describe("runCommandArgs", () => {
     expect(result.stderr).toContain("clawpatch-missing-executable-for-test");
   });
 
+  it("does not surface EPIPE when a child exits before reading stdin", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "clawpatch-exec-stdin-"));
+    const input = "x".repeat(1_000_000);
+    const result = await runCommandArgs(process.execPath, ["-e", "process.exit(0)"], dir, input);
+
+    expect(result.exitCode).toBe(0);
+  });
+
   it("terminates commands that exceed a timeout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "clawpatch-exec-timeout-"));
     const script = join(dir, "hang.mjs");
@@ -84,7 +92,7 @@ describe("runCommandArgs", () => {
           "import { writeFileSync } from 'node:fs';",
           "process.on('SIGTERM', () => {});",
           "process.send?.('ready');",
-          `setTimeout(() => writeFileSync(${JSON.stringify(marker)}, 'alive'), 1000);`,
+          `setTimeout(() => writeFileSync(${JSON.stringify(marker)}, 'alive'), 2500);`,
           "setInterval(() => {}, 1000);",
         ].join("\n"),
         "utf8",
@@ -103,9 +111,9 @@ describe("runCommandArgs", () => {
       );
 
       const result = await runCommandArgs(process.execPath, [parentScript], dir, undefined, {
-        timeoutMs: 300,
+        timeoutMs: 1000,
       });
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 1200));
 
       expect(result.exitCode).toBe(124);
       await expect(access(ready)).resolves.toBeUndefined();

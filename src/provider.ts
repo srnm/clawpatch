@@ -361,6 +361,60 @@ const mockProvider: Provider = {
     if (!prompt.includes("TODO_BUG") && !prompt.includes("BUG:")) {
       return { findings: [], inspected: { files: [], symbols: [], notes: ["mock clean"] } };
     }
+    const evidencePath = prompt.includes("BAD_EVIDENCE")
+      ? "src/not-included.ts"
+      : (firstPromptFileWith(prompt, "TODO_BUG") ?? "src/index.ts");
+    if (prompt.includes("DESLOPIFY_LATE")) {
+      return {
+        findings: [
+          {
+            title: "General bug first",
+            category: "bug",
+            severity: "medium",
+            confidence: "high",
+            evidence: [
+              {
+                path: evidencePath,
+                startLine: null,
+                endLine: null,
+                symbol: null,
+                quote: "TODO_BUG",
+              },
+            ],
+            reasoning: "Mock provider found an explicit bug marker.",
+            reproduction: null,
+            recommendation: "Replace marker with real handling.",
+            whyTestsDoNotAlreadyCoverThis:
+              "Mock fixtures do not encode this marker as intended behavior.",
+            suggestedRegressionTest: "Add a focused test that fails when TODO_BUG is present.",
+            minimumFixScope: "Replace the marker in the owning feature file.",
+          },
+          {
+            title: "Late simplification finding",
+            category: "maintainability",
+            severity: "low",
+            confidence: "high",
+            evidence: [
+              {
+                path: evidencePath,
+                startLine: null,
+                endLine: null,
+                symbol: null,
+                quote: "DESLOPIFY_LATE",
+              },
+            ],
+            reasoning: "Mock provider returned a simplification finding after a general finding.",
+            reproduction: null,
+            recommendation: "Keep the deslopify finding after mode filtering.",
+            whyTestsDoNotAlreadyCoverThis:
+              "Mock fixtures need to prove filtering occurs before the finding cap.",
+            suggestedRegressionTest: null,
+            minimumFixScope: "Filter before capping.",
+          },
+        ],
+        inspected: { files: [evidencePath], symbols: [], notes: ["mock mixed findings"] },
+      };
+    }
     return {
       findings: [
         {
@@ -370,7 +424,7 @@ const mockProvider: Provider = {
           confidence: "high",
           evidence: [
             {
-              path: "src/index.ts",
+              path: evidencePath,
               startLine: null,
               endLine: null,
               symbol: null,
@@ -386,7 +440,7 @@ const mockProvider: Provider = {
           minimumFixScope: "Replace the marker in the owning feature file.",
         },
       ],
-      inspected: { files: ["src/index.ts"], symbols: [], notes: ["mock finding"] },
+      inspected: { files: [evidencePath], symbols: [], notes: ["mock finding"] },
     };
   },
   async fix(): Promise<FixPlanOutput> {
@@ -416,6 +470,22 @@ const mockProvider: Provider = {
     return { outcome: "uncertain", reasoning: "mock provider cannot inspect fixes", commands: [] };
   },
 };
+
+function firstPromptFileWith(prompt: string, marker: string): string | null {
+  const blocks = prompt.split(/^--- /gmu).slice(1);
+  for (const block of blocks) {
+    const newline = block.indexOf("\n");
+    if (newline === -1) {
+      continue;
+    }
+    const path = block.slice(0, newline).trim();
+    const contents = block.slice(newline + 1);
+    if (path.length > 0 && contents.includes(marker)) {
+      return path;
+    }
+  }
+  return null;
+}
 
 const mockFailProvider: Provider = {
   name: "mock-fail",

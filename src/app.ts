@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { appendFile, lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
 import {
   changedPathsBetweenSnapshots,
@@ -9,7 +9,7 @@ import {
 import { loadConfig, resolveStateDir, GlobalOptions } from "./config.js";
 import { detectProject } from "./detect.js";
 import { ClawpatchError, assertDefined } from "./errors.js";
-import { runCommand } from "./exec.js";
+import { runCommand, runCommandArgs } from "./exec.js";
 import {
   appendFindingHistory,
   findingFromOutput,
@@ -23,8 +23,8 @@ import { mapWithSource } from "./agent-mapper.js";
 import { mapFeatures } from "./mapper.js";
 import { emitProgress } from "./progress.js";
 import { providerByName } from "./provider.js";
-import { buildFixPrompt, buildReviewPrompt, buildRevalidatePrompt } from "./prompt.js";
-import type { ReviewMode } from "./prompt.js";
+import { buildFixPrompt, buildReviewPromptBundle, buildRevalidatePrompt } from "./prompt.js";
+import type { ReviewMode, ReviewPromptManifest } from "./prompt.js";
 import {
   evidenceLabel,
   findingSummaries,
@@ -32,6 +32,7 @@ import {
   renderFindingDetail,
   renderReport,
 } from "./reporting.js";
+import { validateReviewOutput } from "./review-validation.js";
 import {
   filterFeaturesByChangedFiles,
   filterFeaturesByProject,
@@ -229,6 +230,39 @@ export async function statusCommand(context: AppContext): Promise<unknown> {
     activeLocks: activeLockIds.size,
     lockFiles: lockFileIds.length,
     lastRun: runs.at(-1)?.runId ?? null,
+  };
+}
+
+export async function ciCommand(
+  context: AppContext,
+  flags: Record<string, string | boolean>,
+): Promise<unknown> {
+  const initialized = await ensureInitialized(context);
+  const mapFlags = providerFlagSubset(flags);
+  const reviewFlags = reviewFlagSubset(flags);
+  const mapped = await mapCommand(context, mapFlags);
+  const reviewed = await reviewCommand(context, reviewFlags);
+  const reportFlags = reportFlagSubset(flags);
+  const report = (await reportCommand(context, reportFlags)) as {
+    findings?: number;
+    output?: string | null;
+    markdown?: string;
+  };
+  const reviewFindings = numberField(reviewed, "findings") ?? 0;
+  const summary = renderCiSummary({ initialized, mapped, reviewed, reviewFindings, report });
+  const githubStepSummary = process.env["GITHUB_STEP_SUMMARY"];
+  if (githubStepSummary !== undefined && githubStepSummary.length > 0) {
+    await appendFile(githubStepSummary, summary, "utf8");
+  }
+  return {
+    initialized,
+    mapped: numberField(mapped, "features"),
+    reviewed: numberField(reviewed, "reviewed") ?? 0,
+    findings: reviewFindings,
+    reportFindings: report.findings ?? 0,
+    report: report.output ?? null,
+    githubStepSummary: githubStepSummary ?? null,
+    next: stringField(reviewed, "next") ?? "clawpatch status",
   };
 }
 
@@ -633,7 +667,7 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
       },
     );
     locked = lockedFeature;
-    const prompt = await buildReviewPrompt(
+    const reviewPrompt = await buildReviewPromptBundle(
       loaded.root,
       loaded.project,
       lockedFeature,
@@ -641,11 +675,28 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
       mode,
       customPrompt,
     );
-    const output = await provider.review(loaded.root, prompt, providerOptions(config));
-    const modeFindings = reviewFindingsForMode(output.findings, mode);
-    const records = modeFindings
-      .slice(0, config.review.maxFindingsPerFeature)
-      .map((finding) => findingFromOutput(finding, lockedFeature.featureId, currentRunId));
+    const providerOutput = await provider.review(
+      loaded.root,
+      reviewPrompt.prompt,
+      providerOptions(config),
+    );
+    const reviewOutput = {
+      ...providerOutput,
+      findings: reviewFindingsForMode(providerOutput.findings, mode).slice(
+        0,
+        config.review.maxFindingsPerFeature,
+      ),
+    };
+    const output = await validateReviewOutput(
+      loaded.root,
+      lockedFeature,
+      config,
+      reviewPrompt.manifest,
+      reviewOutput,
+    );
+    const records = output.findings.map((finding) =>
+      findingFromOutput(finding, lockedFeature.featureId, currentRunId),
+    );
     const findingIds: string[] = [];
     for (const finding of records) {
       const existingFinding = await readFinding(loaded.paths, finding.findingId);
@@ -665,7 +716,7 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
         {
           runId: currentRunId,
           kind: "review",
-          summary: `${records.length} finding(s)`,
+          summary: reviewAnalysisSummary(records.length, reviewPrompt.manifest),
           provider: provider.name,
           model: config.provider.model,
           reasoningEffort: config.provider.reasoningEffort,
@@ -984,6 +1035,174 @@ export async function fixCommand(
   };
 }
 
+export async function openPrCommand(
+  context: AppContext,
+  flags: Record<string, string | boolean>,
+): Promise<unknown> {
+  const loaded = await loadProjectState(context);
+  const patchId = assertDefined(stringFlag(flags, "patch"), "missing --patch");
+  const patches = await readPatchAttempts(loaded.paths);
+  const patch = assertDefined(
+    patches.find((candidate) => candidate.patchAttemptId === patchId),
+    `patch attempt not found: ${patchId}`,
+  );
+  const force = flags["force"] === true;
+  validatePrPatch(patch, force);
+  const git = await discoverGit(loaded.root);
+  if (git.root === null) {
+    throw new ClawpatchError("open-pr requires a git repository", 2, "not-git-repository");
+  }
+  const base = stringFlag(flags, "base") ?? git.defaultBranch;
+  const branch = prBranchName(patch, stringFlag(flags, "branch"), git.currentBranch, base);
+  if (
+    flags["dryRun"] !== true &&
+    patch.git.prUrl !== null &&
+    patch.git.commitSha !== null &&
+    patch.git.branchName !== null
+  ) {
+    return {
+      patchAttempt: patch.patchAttemptId,
+      branch: patch.git.branchName,
+      base,
+      commit: patch.git.commitSha,
+      pr: patch.git.prUrl,
+      next: patch.git.prUrl,
+    };
+  }
+  const findings = await readFindings(loaded.paths);
+  const linkedFindings = findings.filter((finding) => patch.findingIds.includes(finding.findingId));
+  const title = prTitle(stringFlag(flags, "title"), linkedFindings, patch);
+  const body = renderPatchPrBody(patch, linkedFindings);
+  const gitFiles = await gitRelativePatchFiles(git.root, loaded.root, patch.filesChanged);
+  const draft = flags["draft"] === true;
+  const dryRunStagePlan =
+    flags["dryRun"] === true && patch.git.commitSha === null
+      ? await patchStagePlan(
+          git.root,
+          await assertPatchWorktree(patch, git.root, loaded.paths.stateDir, gitFiles, force),
+        )
+      : null;
+  const branchExists =
+    flags["dryRun"] === true && patch.git.commitSha === null
+      ? await localBranchExists(git.root, branch)
+      : false;
+  const commands = plannedPrCommands(
+    patch,
+    branch,
+    base,
+    title,
+    gitFiles,
+    draft,
+    branchExists,
+    dryRunStagePlan,
+  );
+  if (flags["dryRun"] === true) {
+    return {
+      dryRun: true,
+      patchAttempt: patch.patchAttemptId,
+      branch,
+      base,
+      title,
+      body,
+      commands,
+      commandsPreview: commands.join("\n"),
+    };
+  }
+
+  const patchWorktree = await assertPatchWorktree(
+    patch,
+    git.root,
+    loaded.paths.stateDir,
+    gitFiles,
+    force,
+  );
+  let commitSha = patch.git.commitSha;
+  const hadRecordedCommit = commitSha !== null;
+  if (commitSha === null) {
+    const patchBaseSha = assertDefined(patch.git.baseSha, "missing patch base");
+    const targetBranchExists = await localBranchExists(git.root, branch);
+    if (targetBranchExists) {
+      await assertRefAtPatchBase(git.root, branch, patch);
+    }
+    if (git.currentBranch !== branch) {
+      const switchArgs = targetBranchExists
+        ? ["switch", branch]
+        : ["switch", "-c", branch, patchBaseSha];
+      await checkedRun("git switch", runCommandArgs("git", switchArgs, git.root));
+    }
+    await assertRefAtPatchBase(git.root, "HEAD", patch);
+    const stagePlan = await patchStagePlan(git.root, patchWorktree);
+    if (stagePlan.addFiles.length > 0) {
+      await checkedRun(
+        "git add",
+        runCommandArgs("git", ["add", "--", ...stagePlan.addFiles.map(gitPathspec)], git.root),
+      );
+    }
+    if (stagePlan.updateFiles.length > 0) {
+      await checkedRun(
+        "git add -u",
+        runCommandArgs(
+          "git",
+          ["add", "-u", "--", ...stagePlan.updateFiles.map(gitPathspec)],
+          git.root,
+        ),
+      );
+    }
+    await checkedRun(
+      "git commit",
+      runCommandArgs(
+        "git",
+        ["commit", "-m", title, "--", ...stagePlan.commitFiles.map(gitPathspec)],
+        git.root,
+      ),
+    );
+    const commit = await checkedRun(
+      "git rev-parse",
+      runCommandArgs("git", ["rev-parse", "HEAD"], git.root),
+    );
+    commitSha = commit.stdout.trim();
+    await writePatchPrGitState(loaded.paths, patch, {
+      commitSha,
+      branchName: branch,
+      prUrl: patch.git.prUrl,
+    });
+  }
+  commitSha = assertDefined(commitSha, "missing patch commit");
+  const pushArgs = hadRecordedCommit
+    ? ["push", "origin", `${commitSha}:refs/heads/${branch}`]
+    : ["push", "-u", "origin", branch];
+  await checkedRun("git push", runCommandArgs("git", pushArgs, git.root));
+  const ghArgs = prCreateArgs(base, branch, title, draft);
+  const gh = await checkedRun("gh pr create", runCommandArgs(githubCli(), ghArgs, git.root, body));
+  const prUrl = firstUrl(gh.stdout) ?? gh.stdout.trim();
+  await writePatchPrGitState(loaded.paths, patch, { commitSha, branchName: branch, prUrl });
+  return {
+    patchAttempt: patch.patchAttemptId,
+    branch,
+    base,
+    commit: commitSha,
+    pr: prUrl,
+    next: prUrl.length > 0 ? prUrl : "inspect GitHub CLI output",
+  };
+}
+
+async function writePatchPrGitState(
+  paths: ReturnType<typeof statePaths>,
+  patch: PatchAttempt,
+  git: { commitSha: string; branchName: string; prUrl: string | null },
+): Promise<void> {
+  await writePatchAttempt(paths, {
+    ...patch,
+    git: {
+      ...patch.git,
+      commitSha: git.commitSha,
+      branchName: git.branchName,
+      prUrl: git.prUrl,
+    },
+    updatedAt: nowIso(),
+  });
+}
+
 export async function doctorCommand(
   context: AppContext,
   flags: Record<string, string | boolean> = {},
@@ -1049,6 +1268,17 @@ async function loadProjectState(context: AppContext) {
   return { root: context.root, config, paths, project };
 }
 
+async function ensureInitialized(context: AppContext): Promise<boolean> {
+  const config = await loadConfig(context.root, context.options);
+  const paths = statePaths(resolveStateDir(context.root, config));
+  if ((await readProject(paths)) !== null) {
+    await ensureStateDirs(paths);
+    return false;
+  }
+  await initCommand(context, {});
+  return true;
+}
+
 function applyProviderFlags(
   config: Awaited<ReturnType<typeof loadConfig>>,
   flags: Record<string, string | boolean>,
@@ -1066,6 +1296,508 @@ function applyProviderFlags(
       skipGitRepoCheck: flags["skipGitRepoCheck"] === true,
     },
   };
+}
+
+function providerFlagSubset(
+  flags: Record<string, string | boolean>,
+): Record<string, string | boolean> {
+  const subset: Record<string, string | boolean> = {};
+  for (const flag of ["provider", "model", "reasoningEffort"] as const) {
+    const value = stringFlag(flags, flag);
+    if (value !== undefined) {
+      subset[flag] = value;
+    }
+  }
+  if (flags["skipGitRepoCheck"] === true) {
+    subset["skipGitRepoCheck"] = true;
+  }
+  return subset;
+}
+
+function reviewFlagSubset(
+  flags: Record<string, string | boolean>,
+): Record<string, string | boolean> {
+  const subset = providerFlagSubset(flags);
+  for (const flag of ["since", "limit", "jobs"] as const) {
+    const value = stringFlag(flags, flag);
+    if (value !== undefined) {
+      subset[flag] = value;
+    }
+  }
+  return subset;
+}
+
+function reportFlagSubset(flags: Record<string, string | boolean>): Record<string, string> {
+  const output = stringFlag(flags, "output");
+  return output === undefined ? {} : { output };
+}
+
+function renderCiSummary(input: {
+  initialized: boolean;
+  mapped: unknown;
+  reviewed: unknown;
+  reviewFindings: number;
+  report: { findings?: number; output?: string | null };
+}): string {
+  const lines = [
+    "## Clawpatch review",
+    "",
+    `- initialized: ${input.initialized ? "yes" : "no"}`,
+    `- mapped features: ${numberField(input.mapped, "features") ?? "unknown"}`,
+    `- reviewed features: ${numberField(input.reviewed, "reviewed") ?? 0}`,
+    `- findings: ${input.reviewFindings}`,
+  ];
+  if (input.report.findings !== undefined && input.report.findings !== input.reviewFindings) {
+    lines.push(`- report findings: ${input.report.findings}`);
+  }
+  if (input.report.output !== undefined && input.report.output !== null) {
+    lines.push(`- report: ${input.report.output}`);
+  }
+  const next = stringField(input.reviewed, "next");
+  if (next !== undefined) {
+    lines.push(`- next: \`${next}\``);
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function numberField(value: unknown, field: string): number | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const candidate = (value as Record<string, unknown>)[field];
+  return typeof candidate === "number" ? candidate : null;
+}
+
+function stringField(value: unknown, field: string): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const candidate = (value as Record<string, unknown>)[field];
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function reviewAnalysisSummary(findings: number, manifest: ReviewPromptManifest): string {
+  return [
+    `${findings} finding(s)`,
+    `prompt=${manifest.promptBytes} bytes`,
+    `approxTokens=${manifest.approximateTokens}`,
+    `includedFiles=${manifest.includedFiles.length}`,
+    `omittedFiles=${manifest.omittedFiles.length}`,
+  ].join("; ");
+}
+
+function validatePrPatch(patch: PatchAttempt, force: boolean): void {
+  if (patch.filesChanged.length === 0) {
+    throw new ClawpatchError(
+      `patch has no changed files: ${patch.patchAttemptId}`,
+      2,
+      "invalid-input",
+    );
+  }
+  if (!["applied", "validated"].includes(patch.status) && !force) {
+    throw new ClawpatchError(
+      `patch is not ready for PR: ${patch.patchAttemptId} (${patch.status})`,
+      2,
+      "invalid-input",
+    );
+  }
+  const failed = patch.testResults.filter((result) => result.exitCode !== 0);
+  if (failed.length > 0 && !force) {
+    throw new ClawpatchError(
+      `patch validation failed; use --force to open a PR anyway: ${failed[0]?.command ?? "unknown"}`,
+      6,
+      "validation-failed",
+    );
+  }
+}
+
+function prBranchName(
+  patch: PatchAttempt,
+  explicit: string | undefined,
+  currentBranch: string | null,
+  base: string | null,
+): string {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  if (base === null) {
+    return patch.git.branchName?.startsWith("clawpatch/") === true
+      ? patch.git.branchName
+      : `clawpatch/${patch.patchAttemptId}`;
+  }
+  if (
+    patch.git.branchName !== null &&
+    patch.git.branchName !== base &&
+    patch.git.branchName !== "main" &&
+    patch.git.branchName !== "master"
+  ) {
+    return patch.git.branchName;
+  }
+  if (
+    base !== null &&
+    currentBranch !== null &&
+    currentBranch !== base &&
+    currentBranch !== "main" &&
+    currentBranch !== "master"
+  ) {
+    return currentBranch;
+  }
+  return `clawpatch/${patch.patchAttemptId}`;
+}
+
+function prTitle(
+  explicit: string | undefined,
+  findings: FindingRecord[],
+  patch: PatchAttempt,
+): string {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const title = findings[0]?.title ?? patch.plan.split("\n")[0] ?? patch.patchAttemptId;
+  return `fix: ${title}`.slice(0, 120);
+}
+
+function renderPatchPrBody(patch: PatchAttempt, findings: FindingRecord[]): string {
+  const lines = [
+    "## Summary",
+    "",
+    `- patch attempt: \`${patch.patchAttemptId}\``,
+    `- status: \`${patch.status}\``,
+    `- files changed: ${patch.filesChanged.length}`,
+    "",
+    "## Findings",
+    "",
+  ];
+  if (findings.length === 0) {
+    lines.push("- none linked");
+  } else {
+    for (const finding of findings) {
+      lines.push(`- \`${finding.findingId}\`: ${finding.title} (${finding.severity})`);
+    }
+  }
+  lines.push("", "## Changed Files", "");
+  for (const file of patch.filesChanged) {
+    lines.push(`- \`${file}\``);
+  }
+  lines.push("", "## Validation", "");
+  const validation = patch.testResults.length > 0 ? patch.testResults : patch.commandsRun;
+  if (validation.length === 0) {
+    lines.push("- none recorded");
+  } else {
+    for (const result of validation) {
+      lines.push(`- \`${result.command}\` => ${result.exitCode ?? "unknown"}`);
+    }
+  }
+  lines.push("", "## Plan", "", patch.plan, "");
+  return `${lines.join("\n")}\n`;
+}
+
+async function gitRelativePatchFiles(
+  gitRoot: string,
+  projectRoot: string,
+  files: string[],
+): Promise<string[]> {
+  const projectPrefix = await gitRelativePathPrefix(gitRoot, projectRoot);
+  if (projectPrefix === ".." || projectPrefix.startsWith("../")) {
+    throw new ClawpatchError(
+      `project root is outside git repository: ${projectRoot}`,
+      2,
+      "invalid-root",
+    );
+  }
+  const scopedPrefix = isUsableRelativePrefix(projectPrefix) ? projectPrefix : "";
+  return files.map((file) => {
+    const relativeFile = normalizePath(file);
+    if (
+      relativeFile.startsWith("../") ||
+      relativeFile === ".." ||
+      relativeFile.split("/").includes("..") ||
+      resolve(relativeFile) === relativeFile ||
+      relativeFile.length === 0
+    ) {
+      throw new ClawpatchError(`patch file escapes git repository: ${file}`, 2, "invalid-input");
+    }
+    return scopedPrefix.length === 0 ? relativeFile : `${scopedPrefix}/${relativeFile}`;
+  });
+}
+
+function plannedPrCommands(
+  patch: PatchAttempt,
+  branch: string,
+  base: string | null,
+  title: string,
+  gitFiles: string[],
+  draft: boolean,
+  branchExists: boolean,
+  stagePlan: PatchStagePlan | null,
+): string[] {
+  const commands: string[] = [];
+  if (patch.git.commitSha === null) {
+    const patchBaseSha = assertDefined(patch.git.baseSha, "missing patch base");
+    const commitFiles = stagePlan?.commitFiles ?? gitFiles;
+    const addFiles = stagePlan?.addFiles ?? gitFiles;
+    const updateFiles = stagePlan?.updateFiles ?? [];
+    commands.push(
+      branchExists
+        ? `git switch ${shellArg(branch)}`
+        : `git switch -c ${shellArg(branch)} ${shellArg(patchBaseSha)}`,
+    );
+    if (addFiles.length > 0) {
+      commands.push(`git add -- ${shellPathspecArgs(addFiles)}`);
+    }
+    if (updateFiles.length > 0) {
+      commands.push(`git add -u -- ${shellPathspecArgs(updateFiles)}`);
+    }
+    commands.push(`git commit -m ${shellArg(title)} -- ${shellPathspecArgs(commitFiles)}`);
+  }
+  commands.push(
+    patch.git.commitSha === null
+      ? `git push -u origin ${shellArg(branch)}`
+      : `git push origin ${shellArg(`${patch.git.commitSha}:refs/heads/${branch}`)}`,
+  );
+  commands.push(`gh ${prCreateArgs(base, branch, title, draft).map(shellArg).join(" ")}`);
+  return commands;
+}
+
+function prCreateArgs(
+  base: string | null,
+  branch: string,
+  title: string,
+  draft: boolean,
+): string[] {
+  const args = ["pr", "create", "--head", branch, "--title", title, "--body-file", "-"];
+  if (base !== null) {
+    args.splice(2, 0, "--base", base);
+  }
+  if (draft) {
+    args.push("--draft");
+  }
+  return args;
+}
+
+async function assertPatchWorktree(
+  patch: PatchAttempt,
+  gitRoot: string,
+  stateDir: string,
+  gitFiles: string[],
+  force: boolean,
+): Promise<{ commitFiles: string[]; stagedOnlyFiles: string[] }> {
+  if (patch.git.commitSha !== null) {
+    return { commitFiles: gitFiles, stagedOnlyFiles: [] };
+  }
+  const status = await checkedRun(
+    "git status",
+    runCommandArgs(
+      "git",
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      gitRoot,
+      undefined,
+      {
+        trimOutput: false,
+      },
+    ),
+  );
+  const statusChanges = gitStatusChanges(status.stdout);
+  const dirty = uniqueStrings(statusChanges.flatMap((change) => change.paths));
+  const statePrefix = await gitRelativePathPrefix(gitRoot, stateDir);
+  const sourceDirty = dirty.filter((file) => !isStatePath(file, statePrefix));
+  if (sourceDirty.length === 0) {
+    throw new ClawpatchError("no uncommitted patch changes to commit", 2, "invalid-input");
+  }
+  const expected = new Set(gitFiles);
+  const commitFiles = new Set(gitFiles);
+  const stagedOnlyFiles = new Set<string>();
+  for (const change of statusChanges) {
+    if (change.secondaryPath === undefined) {
+      continue;
+    }
+    if (expected.has(change.primaryPath) || expected.has(change.secondaryPath)) {
+      commitFiles.add(change.primaryPath);
+      commitFiles.add(change.secondaryPath);
+      stagedOnlyFiles.add(change.secondaryPath);
+    }
+  }
+  const extra = sourceDirty.filter((file) => !commitFiles.has(file));
+  if (extra.length > 0 && !force) {
+    throw new ClawpatchError(
+      `dirty worktree has files outside patch attempt: ${extra.join(", ")}`,
+      3,
+      "dirty-worktree",
+    );
+  }
+  const missing = gitFiles.filter((file) => !sourceDirty.includes(file));
+  if (missing.length > 0 && !force) {
+    throw new ClawpatchError(
+      `patch files are not dirty in the worktree: ${missing.join(", ")}`,
+      2,
+      "invalid-input",
+    );
+  }
+  return { commitFiles: [...commitFiles], stagedOnlyFiles: [...stagedOnlyFiles] };
+}
+
+type PatchStagePlan = {
+  commitFiles: string[];
+  addFiles: string[];
+  updateFiles: string[];
+};
+
+async function patchStagePlan(
+  root: string,
+  patchWorktree: { commitFiles: string[]; stagedOnlyFiles: string[] },
+): Promise<PatchStagePlan> {
+  const stagedOnlyFiles = new Set(patchWorktree.stagedOnlyFiles);
+  const stageableFiles = patchWorktree.commitFiles.filter((file) => !stagedOnlyFiles.has(file));
+  const addFiles = await existingGitFiles(root, stageableFiles);
+  const updateFiles = stageableFiles.filter((file) => !addFiles.includes(file));
+  return { commitFiles: patchWorktree.commitFiles, addFiles, updateFiles };
+}
+
+type GitStatusChange = {
+  paths: string[];
+  primaryPath: string;
+  secondaryPath: string | undefined;
+};
+
+function gitStatusChanges(output: string): GitStatusChange[] {
+  const fields = output.split("\0").filter((field) => field.length > 0);
+  const changes: GitStatusChange[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index] ?? "";
+    if (field.length < 4) {
+      continue;
+    }
+    const status = field.slice(0, 2);
+    const primaryPath = normalizePath(field.slice(3));
+    const paths = [primaryPath];
+    let secondaryPath: string | undefined;
+    if (/[RC]/u.test(status)) {
+      secondaryPath = normalizePath(fields[index + 1] ?? "");
+      if (secondaryPath.length > 0) {
+        paths.push(secondaryPath);
+      }
+      index += 1;
+    }
+    changes.push({ paths, primaryPath, secondaryPath });
+  }
+  return changes;
+}
+
+function isStatePath(file: string, statePrefix: string): boolean {
+  return statePrefix.length > 0 && (file === statePrefix || file.startsWith(`${statePrefix}/`));
+}
+
+async function gitRelativePathPrefix(gitRoot: string, path: string): Promise<string> {
+  const direct = normalizePath(relative(gitRoot, path));
+  if (isUsableRelativePrefix(direct)) {
+    return direct;
+  }
+  const [realGitRoot, realPath] = await Promise.all([
+    realpath(gitRoot).catch(() => gitRoot),
+    realpath(path).catch(() => path),
+  ]);
+  const resolved = normalizePath(relative(realGitRoot, realPath));
+  if (resolved === "" || isUsableRelativePrefix(resolved)) {
+    return resolved;
+  }
+  const normalizedGitRoot = normalizeDarwinPrivateVar(realGitRoot);
+  const normalizedPath = normalizeDarwinPrivateVar(realPath);
+  if (normalizedPath === normalizedGitRoot) {
+    return "";
+  }
+  if (normalizedPath.startsWith(`${normalizedGitRoot}/`)) {
+    return normalizedPath.slice(normalizedGitRoot.length + 1);
+  }
+  return direct;
+}
+
+function isUsableRelativePrefix(path: string): boolean {
+  return path.length > 0 && path !== "." && path !== ".." && !path.startsWith("../");
+}
+
+async function checkedRun(
+  label: string,
+  resultPromise: Promise<CommandResult>,
+): Promise<CommandResult> {
+  const result = await resultPromise;
+  if (result.exitCode !== 0) {
+    throw new ClawpatchError(
+      `${label} failed: ${result.stderr || result.stdout}`,
+      label.startsWith("gh") ? 7 : 1,
+      label.startsWith("gh") ? "github-failure" : "git-failure",
+    );
+  }
+  return result;
+}
+
+function githubCli(): string {
+  return process.env["CLAWPATCH_GH"] ?? "gh";
+}
+
+async function localBranchExists(gitRoot: string, branch: string): Promise<boolean> {
+  const result = await runCommandArgs(
+    "git",
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    gitRoot,
+  );
+  return result.exitCode === 0;
+}
+
+async function assertRefAtPatchBase(
+  gitRoot: string,
+  ref: string,
+  patch: PatchAttempt,
+): Promise<void> {
+  const head = await checkedRun(
+    "git rev-parse",
+    runCommandArgs("git", ["rev-parse", ref], gitRoot),
+  );
+  const sha = head.stdout.trim();
+  if (sha !== patch.git.baseSha) {
+    const message = [
+      `patch attempt ${patch.patchAttemptId} was recorded from ${patch.git.baseSha},`,
+      `but ${ref} is ${sha}`,
+    ].join(" ");
+    throw new ClawpatchError(message, 2, "invalid-input");
+  }
+}
+
+function firstUrl(output: string): string | null {
+  return /https?:\/\/\S+/u.exec(output)?.[0] ?? null;
+}
+
+function gitPathspec(path: string): string {
+  return `:(literal)${path}`;
+}
+
+function shellPathspecArgs(files: string[]): string {
+  return files.map((file) => shellArg(gitPathspec(file))).join(" ");
+}
+
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/gu, "/");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+async function existingGitFiles(root: string, files: string[]): Promise<string[]> {
+  const existing = await Promise.all(
+    files.map(async (file) =>
+      (await lstat(resolve(root, file)).catch(() => null)) === null ? null : file,
+    ),
+  );
+  return existing.filter((file): file is string => file !== null);
+}
+
+function normalizeDarwinPrivateVar(path: string): string {
+  return normalizePath(path).replace(/^\/private\/var\//u, "/var/");
 }
 
 function providerOptions(config: ReturnType<typeof applyProviderFlags>) {

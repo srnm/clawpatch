@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   cleanLocksCommand,
+  ciCommand,
   doctorCommand,
   fixCommand,
   initCommand,
@@ -13,6 +14,7 @@ import {
   revalidateCommand,
   reviewCommand,
   nextCommand,
+  openPrCommand,
   showCommand,
   statusCommand,
   triageCommand,
@@ -51,6 +53,8 @@ async function dispatch(
       return statusCommand(context);
     case "review":
       return reviewCommand(context, flags);
+    case "ci":
+      return ciCommand(context, flags);
     case "report":
       return reportCommand(context, flags);
     case "show":
@@ -61,6 +65,8 @@ async function dispatch(
       return triageCommand(context, flags);
     case "fix":
       return fixCommand(context, flags);
+    case "open-pr":
+      return openPrCommand(context, flags);
     case "revalidate":
       return revalidateCommand(context, flags);
     case "doctor":
@@ -163,11 +169,22 @@ const commandFlags = {
     "promptFile",
     "exportTribunalLedger",
   ]),
+  ci: new Set([
+    "limit",
+    "since",
+    "jobs",
+    "provider",
+    "model",
+    "reasoningEffort",
+    "skipGitRepoCheck",
+    "output",
+  ]),
   report: new Set(["status", "severity", "feature", "project", "category", "triage", "output"]),
   show: new Set(["finding"]),
   next: new Set(["status", "project"]),
   triage: new Set(["finding", "status", "note"]),
   fix: new Set(["finding", "provider", "model", "reasoningEffort", "skipGitRepoCheck", "dryRun"]),
+  "open-pr": new Set(["patch", "base", "branch", "title", "draft", "dryRun", "force"]),
   revalidate: new Set([
     "finding",
     "all",
@@ -191,6 +208,7 @@ const requiredCommandFlags: Partial<Record<keyof typeof commandFlags, string[]>>
   show: ["finding"],
   triage: ["finding", "status"],
   fix: ["finding"],
+  "open-pr": ["patch"],
 };
 
 const valueFlagNames = new Set([
@@ -216,6 +234,10 @@ const valueFlagNames = new Set([
   "triage",
   "project",
   "note",
+  "patch",
+  "base",
+  "branch",
+  "title",
 ]);
 
 const booleanFlagNames = new Set([
@@ -230,6 +252,7 @@ const booleanFlagNames = new Set([
   "skip-git-repo-check",
   "force",
   "all",
+  "draft",
 ]);
 
 const shortFlagNames = new Set(["-h", "-q", "-v", "-o"]);
@@ -423,6 +446,25 @@ Flags:
 `);
     return;
   }
+  if (command === "ci") {
+    process.stdout.write(`clawpatch ci
+
+Usage:
+  clawpatch ci [flags]
+
+Flags:
+  --since <ref>
+  --limit <n>
+  --jobs <n>        default: 10
+  --provider <name>
+  --model <name>
+  --reasoning-effort <none|minimal|low|medium|high|xhigh>
+  --skip-git-repo-check
+  --output <path>
+  --json
+`);
+    return;
+  }
   if (command === "show") {
     process.stdout.write(`clawpatch show
 
@@ -475,6 +517,24 @@ Flags:
   --reasoning-effort <none|minimal|low|medium|high|xhigh>
   --skip-git-repo-check
   --dry-run
+  --json
+`);
+    return;
+  }
+  if (command === "open-pr") {
+    process.stdout.write(`clawpatch open-pr
+
+Usage:
+  clawpatch open-pr --patch <id> [flags]
+
+Flags:
+  --patch <id>
+  --base <branch>
+  --branch <branch>
+  --title <title>
+  --draft
+  --dry-run
+  --force
   --json
 `);
     return;
@@ -579,11 +639,13 @@ Commands:
   map
   status
   review
+  ci
   report
   show
   next
   triage
   fix
+  open-pr
   revalidate
   doctor
   clean-locks

@@ -31,11 +31,13 @@ clawpatch init
 clawpatch map
 clawpatch review --limit 3 --jobs 3
 clawpatch review --mode deslopify --limit 3
+clawpatch ci --since origin/main --output clawpatch-report.md
 clawpatch report
 clawpatch next
 clawpatch show --finding <id>
 clawpatch triage --finding <id> --status false-positive --note "covered by tests"
 clawpatch fix --finding <id>
+clawpatch open-pr --patch <patchAttemptId> --draft
 clawpatch revalidate --finding <id>
 clawpatch revalidate --all --status open
 ```
@@ -122,11 +124,13 @@ Supported provider names today:
 - `clawpatch status`: show project, dirty state, feature/finding counts
 - `clawpatch review`: review pending or selected features
 - `clawpatch review --mode deslopify`: review only for locally provable slop cleanup
+- `clawpatch ci`: initialize if needed, map, review, write a report, and append a GitHub step summary
 - `clawpatch report`: print or write a Markdown findings report
 - `clawpatch next`: print the next actionable finding
 - `clawpatch show --finding <id>`: inspect one finding with evidence and suggested validation
 - `clawpatch triage --finding <id> --status <status>`: mark a finding with optional history note
 - `clawpatch fix --finding <id>`: run the explicit patch loop for one finding
+- `clawpatch open-pr --patch <id>`: commit an applied patch attempt and open a GitHub PR
 - `clawpatch revalidate --finding <id>`: re-check one finding
 - `clawpatch revalidate --all`: re-check open findings with report-style filters
 - `clawpatch doctor`: check provider availability
@@ -180,7 +184,8 @@ to features so runs can resume and be audited.
 - Review does not edit files.
 - Fix is explicit and selected by finding ID.
 - Fix refuses a dirty source worktree by default.
-- Clawpatch never commits, pushes, opens PRs, or lands changes today.
+- Clawpatch commits, pushes, and opens PRs only from explicit patch commands such as `open-pr`.
+- Clawpatch does not land changes today.
 - Provider output is parsed through strict schemas.
 - Symlinked directories and generated build output are skipped during mapping.
 

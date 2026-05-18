@@ -46,11 +46,7 @@ export async function runCommandRaw(
     });
     child.on("close", resolve);
   });
-  if (input !== undefined) {
-    child.stdin.end(input);
-  } else {
-    child.stdin.end();
-  }
+  endChildStdin(child, input);
   const exitCode = await exitCodePromise;
   if (spawnErrorMessage !== null) {
     stderr += stderr.length === 0 ? spawnErrorMessage : `\n${spawnErrorMessage}`;
@@ -137,11 +133,7 @@ export async function runCommandArgs(
       });
     }, options.timeoutMs);
   }
-  if (input !== undefined) {
-    child.stdin.end(input);
-  } else {
-    child.stdin.end();
-  }
+  endChildStdin(child, input);
   const exitCode = await exitCodePromise;
   if (spawnErrorMessage !== null) {
     stderr += stderr.length === 0 ? spawnErrorMessage : `\n${spawnErrorMessage}`;
@@ -228,6 +220,19 @@ function signalExitCode(signal: NodeJS.Signals): number {
 }
 
 function noop(): void {}
+
+function endChildStdin(child: ReturnType<typeof spawn>, input: string | undefined): void {
+  const stdin = child.stdin;
+  if (stdin === null) {
+    return;
+  }
+  stdin.on("error", noop);
+  if (input !== undefined) {
+    stdin.end(input);
+  } else {
+    stdin.end();
+  }
+}
 
 function commandSpawnSpec(
   program: string,

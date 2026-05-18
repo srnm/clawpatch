@@ -15,11 +15,13 @@ import { delimiter, join } from "node:path";
 import {
   fixCommand,
   cleanLocksCommand,
+  ciCommand,
   doctorCommand,
   initCommand,
   makeContext,
   mapCommand,
   nextCommand,
+  openPrCommand,
   reportCommand,
   revalidateCommand,
   reviewCommand,
@@ -45,12 +47,13 @@ import {
   statePaths,
   writeFeature,
   writeFinding,
+  writePatchAttempt,
 } from "./state.js";
 import { buildFixPrompt, buildReviewPrompt } from "./prompt.js";
 import type { Provider } from "./provider.js";
 import { fixtureRoot, testOptions, writeFixture } from "./test-helpers.js";
 import { findingRecordSchema } from "./types.js";
-import type { FeatureRecord } from "./types.js";
+import type { FeatureRecord, PatchAttempt } from "./types.js";
 
 async function sinceFixture(prefix: string): Promise<string> {
   const root = await fixtureRoot(prefix);
@@ -240,9 +243,31 @@ describe("workflow", () => {
     expect(parseArgs(["review", "--skip-git-repo-check"]).flags).toMatchObject({
       skipGitRepoCheck: true,
     });
+    expect(parseArgs(["ci", "--skip-git-repo-check"]).flags).toMatchObject({
+      skipGitRepoCheck: true,
+    });
     expect(parseArgs(["fix", "--finding", "f", "--dry-run"]).flags).toMatchObject({
       dryRun: true,
       finding: "f",
+    });
+    expect(
+      parseArgs([
+        "open-pr",
+        "--patch",
+        "pat_123",
+        "--base",
+        "main",
+        "--branch",
+        "clawpatch/pat_123",
+        "--draft",
+        "--dry-run",
+      ]).flags,
+    ).toMatchObject({
+      patch: "pat_123",
+      base: "main",
+      branch: "clawpatch/pat_123",
+      draft: true,
+      dryRun: true,
     });
   });
 
@@ -266,6 +291,24 @@ describe("workflow", () => {
     expect(() => parseArgs(["review", "--mode", "slop"])).toThrow(
       "invalid --mode; expected default or deslopify",
     );
+    expect(
+      parseArgs([
+        "ci",
+        "--since",
+        "origin/main",
+        "--limit",
+        "2",
+        "--jobs",
+        "1",
+        "--output",
+        "report.md",
+      ]).flags,
+    ).toMatchObject({
+      since: "origin/main",
+      limit: "2",
+      jobs: "1",
+      output: "report.md",
+    });
     expect(parseArgs(["revalidate", "--since", "origin/main"]).flags).toMatchObject({
       since: "origin/main",
     });
@@ -356,6 +399,9 @@ describe("workflow", () => {
     const reviewed = await reviewCommand(context, { limit: "1" });
     const paths = statePaths(join(root, ".clawpatch"));
     const finding = (await readFindings(paths))[0];
+    const reviewedFeature = (await readFeatures(paths)).find(
+      (feature) => feature.featureId === finding?.featureId,
+    );
     expect(finding).toBeDefined();
     await writeFinding(paths, {
       ...finding!,
@@ -392,7 +438,103 @@ describe("workflow", () => {
         },
       ],
     });
+    expect(reviewedFeature?.analysisHistory.at(-1)?.summary).toContain("prompt=");
     delete process.env["CLAWPATCH_PROVIDER"];
+  });
+
+  it("runs CI review flow and appends a GitHub step summary", async () => {
+    const root = await fixtureRoot("clawpatch-ci-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({
+        name: "ci-flow",
+        bin: { app: "src/index.ts" },
+        scripts: { test: "vitest run" },
+      }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    const summaryPath = join(root, "summary.md");
+    const reportPath = join(root, "review.md");
+    const previousProvider = process.env["CLAWPATCH_PROVIDER"];
+    const previousSummary = process.env["GITHUB_STEP_SUMMARY"];
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["GITHUB_STEP_SUMMARY"] = summaryPath;
+    try {
+      const context = await makeContext(testOptions(root));
+      const result = await ciCommand(context, { limit: "1", jobs: "1", output: reportPath });
+      const summary = await readFile(summaryPath, "utf8");
+      const report = await readFile(reportPath, "utf8");
+
+      expect(result).toMatchObject({
+        initialized: true,
+        mapped: expect.any(Number),
+        reviewed: 1,
+        findings: 1,
+        report: reportPath,
+        githubStepSummary: summaryPath,
+      });
+      expect(summary).toContain("## Clawpatch review");
+      expect(summary).toContain("- findings: 1");
+      expect(report).toContain("# clawpatch report");
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env["CLAWPATCH_PROVIDER"];
+      } else {
+        process.env["CLAWPATCH_PROVIDER"] = previousProvider;
+      }
+      if (previousSummary === undefined) {
+        delete process.env["GITHUB_STEP_SUMMARY"];
+      } else {
+        process.env["GITHUB_STEP_SUMMARY"] = previousSummary;
+      }
+    }
+  });
+
+  it("does not count stale report findings as CI review findings", async () => {
+    const root = await fixtureRoot("clawpatch-ci-stale-findings-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "ci-stale", bin: { app: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "initial"');
+    const summaryPath = join(root, "summary.md");
+    const previousProvider = process.env["CLAWPATCH_PROVIDER"];
+    const previousSummary = process.env["GITHUB_STEP_SUMMARY"];
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    process.env["GITHUB_STEP_SUMMARY"] = summaryPath;
+    try {
+      const context = await makeContext(testOptions(root));
+      await initCommand(context, {});
+      await mapCommand(context);
+      await reviewCommand(context, { limit: "1" });
+
+      const result = await ciCommand(context, { since: "HEAD", limit: "10" });
+      const summary = await readFile(summaryPath, "utf8");
+
+      expect(result).toMatchObject({
+        reviewed: 0,
+        findings: 0,
+        reportFindings: 1,
+      });
+      expect(summary).toContain("- findings: 0");
+      expect(summary).toContain("- report findings: 1");
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env["CLAWPATCH_PROVIDER"];
+      } else {
+        process.env["CLAWPATCH_PROVIDER"] = previousProvider;
+      }
+      if (previousSummary === undefined) {
+        delete process.env["GITHUB_STEP_SUMMARY"];
+      } else {
+        process.env["GITHUB_STEP_SUMMARY"] = previousSummary;
+      }
+    }
   });
 
   it.runIf(process.platform !== "win32")(
@@ -2939,6 +3081,48 @@ describe("workflow", () => {
     delete process.env["CLAWPATCH_PROVIDER"];
   });
 
+  it("applies the finding cap after deslopify mode filtering", async () => {
+    const root = await fixtureRoot("clawpatch-deslopify-cap-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "deslopify-cap" }));
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG DESLOPIFY_LATE';\n");
+    const previousProvider = process.env["CLAWPATCH_PROVIDER"];
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    try {
+      const context = await makeContext(testOptions(root));
+      const config = defaultConfig();
+      config.review.maxFindingsPerFeature = 1;
+
+      await initCommand(context, {});
+      await writeFixture(root, ".clawpatch/config.json", JSON.stringify(config, null, 2));
+      await mapCommand(context);
+      const paths = statePaths(join(root, ".clawpatch"));
+      const sourceFeature = (await readFeatures(paths)).find((feature) =>
+        feature.ownedFiles.some((file) => file.path === "src/index.ts"),
+      );
+      if (sourceFeature === undefined) {
+        throw new Error("missing source feature");
+      }
+      const reviewed = await reviewCommand(context, {
+        feature: sourceFeature.featureId,
+        mode: "deslopify",
+      });
+      const findings = await readFindings(paths);
+
+      expect(reviewed).toMatchObject({ findings: 1 });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        title: "Late simplification finding",
+        category: "maintainability",
+      });
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env["CLAWPATCH_PROVIDER"];
+      } else {
+        process.env["CLAWPATCH_PROVIDER"] = previousProvider;
+      }
+    }
+  });
+
   it("does not include escaped feature paths in prompts", async () => {
     const root = await fixtureRoot("clawpatch-path-escape-");
     const siblingSecret = join(root, "..", "secret.txt");
@@ -3012,6 +3196,1044 @@ describe("workflow", () => {
 
     expect(symlinkPrompt).toContain("[skipped: path escapes repository root]");
     expect(symlinkPrompt).not.toContain("do-not-read");
+  });
+
+  it("previews a PR for an applied patch attempt", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const previousProvider = process.env["CLAWPATCH_PROVIDER"];
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    try {
+      const context = await makeContext(testOptions(root));
+      const paths = statePaths(join(root, ".clawpatch"));
+      await initCommand(context, {});
+      await mapCommand(context);
+      await reviewCommand(context, { limit: "1" });
+      const finding = (await readFindings(paths))[0];
+      expect(finding).toBeDefined();
+      await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+      const baseSha = (await runCommand("git rev-parse HEAD", root)).stdout.trim();
+      const now = new Date().toISOString();
+      const patch: PatchAttempt = {
+        schemaVersion: 1,
+        patchAttemptId: "pat_open_pr",
+        findingIds: [finding!.findingId],
+        featureIds: [finding!.featureId],
+        status: "applied",
+        plan: "Replace the marker value.",
+        filesChanged: ["src/index.ts"],
+        commandsRun: [],
+        testResults: [
+          {
+            command: "pnpm test",
+            cwd: root,
+            exitCode: 0,
+            durationMs: 1,
+            stdout: "",
+            stderr: "",
+          },
+        ],
+        provider: null,
+        git: {
+          baseSha,
+          commitSha: null,
+          branchName: null,
+          prUrl: null,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+      await writePatchAttempt(paths, patch);
+
+      const preview = await openPrCommand(context, {
+        patch: patch.patchAttemptId,
+        base: "main",
+        branch: "clawpatch/pat_open_pr",
+        dryRun: true,
+      });
+      const stored = (await readPatchAttempts(paths)).find(
+        (candidate) => candidate.patchAttemptId === patch.patchAttemptId,
+      );
+      const cliPreview = await runCli([
+        "--root",
+        root,
+        "open-pr",
+        "--patch",
+        patch.patchAttemptId,
+        "--base",
+        "main",
+        "--branch",
+        "clawpatch/pat_open_pr",
+        "--dry-run",
+      ]);
+
+      expect(preview).toMatchObject({
+        dryRun: true,
+        patchAttempt: patch.patchAttemptId,
+        branch: "clawpatch/pat_open_pr",
+        base: "main",
+      });
+      expect(preview).toMatchObject({
+        body: expect.stringContaining("pat_open_pr"),
+        commands: expect.arrayContaining([
+          expect.stringContaining("gh pr create --base main --head clawpatch/pat_open_pr"),
+        ]),
+      });
+      expect(cliPreview.stdout).toContain("commandsPreview: git switch");
+      expect(cliPreview.stdout).toContain("gh pr create --base main --head clawpatch/pat_open_pr");
+      expect(stored?.git.prUrl).toBeNull();
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env["CLAWPATCH_PROVIDER"];
+      } else {
+        process.env["CLAWPATCH_PROVIDER"] = previousProvider;
+      }
+    }
+  });
+
+  it("uses a patch branch when the PR base is unknown", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-unknown-base-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr-unknown-base", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git branch -m develop");
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_unknown_base",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: "develop",
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const preview = await openPrCommand(context, {
+      patch: "pat_open_pr_unknown_base",
+      dryRun: true,
+    });
+
+    expect(preview).toMatchObject({
+      branch: "clawpatch/pat_open_pr_unknown_base",
+      base: null,
+    });
+    expect(preview).toMatchObject({
+      commands: expect.arrayContaining([
+        expect.stringContaining("gh pr create --head clawpatch/pat_open_pr_unknown_base"),
+      ]),
+    });
+    expect(preview).toMatchObject({
+      commands: expect.not.arrayContaining([expect.stringContaining("--base main")]),
+    });
+  });
+
+  it("previews PR commands with execution paths and draft flags", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-subdir-");
+    const projectRoot = join(root, "packages/app");
+    await writeFixture(
+      root,
+      "packages/app/package.json",
+      JSON.stringify({ name: "open-pr-subdir", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "packages/app/src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add packages");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const context = await makeContext(testOptions(projectRoot));
+    const paths = statePaths(join(projectRoot, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, "packages/app/src/index.ts", "export const value = 'fixed';\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_subdir",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: projectRoot,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const preview = await openPrCommand(context, {
+      patch: "pat_open_pr_subdir",
+      base: "develop",
+      branch: "clawpatch/pat_open_pr_subdir",
+      draft: true,
+      dryRun: true,
+    });
+
+    expect(preview).toMatchObject({
+      commands: expect.arrayContaining([
+        expect.stringContaining("git add -- ':(literal)packages/app/src/index.ts'"),
+        expect.stringContaining("gh pr create --base develop --head clawpatch/pat_open_pr_subdir"),
+        expect.stringContaining("--draft"),
+      ]),
+    });
+  });
+
+  it("opens PRs from symlinked project roots with repo-relative patch paths", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-symlink-root-");
+    const projectRoot = join(root, "packages/app");
+    await writeFixture(
+      root,
+      "packages/app/package.json",
+      JSON.stringify({ name: "open-pr-symlink-root" }),
+    );
+    await writeFixture(root, "packages/app/src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add packages");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-symlink-root-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const linkParent = await fixtureRoot("clawpatch-open-pr-symlink-root-link-");
+    const linkedProjectRoot = join(linkParent, "app");
+    await symlink(projectRoot, linkedProjectRoot);
+    const context = await makeContext(testOptions(linkedProjectRoot));
+    const paths = statePaths(join(linkedProjectRoot, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, "packages/app/src/index.ts", "export const value = 'fixed';\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_symlink_root",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: linkedProjectRoot,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-symlink-root-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1004\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const preview = (await openPrCommand(context, {
+        patch: "pat_open_pr_symlink_root",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_symlink_root",
+        dryRun: true,
+      })) as { commands: string[] };
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_symlink_root",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_symlink_root",
+      })) as { commit: string; pr: string };
+      const committed = await runCommand(`git show --name-only --format= ${opened.commit}`, root);
+
+      expect(preview.commands).toContain("git add -- ':(literal)packages/app/src/index.ts'");
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1004");
+      expect(committed.stdout.trim()).toBe("packages/app/src/index.ts");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("opens PRs for newly created dangling symlinks", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-symlink-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-symlink" }));
+    await initGit(root);
+    await checkCommand(root, "git add package.json");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-symlink-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await symlink("missing-target", join(root, "link"));
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_symlink",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Add the symlink.",
+      filesChanged: ["link"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-symlink-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1003\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_symlink",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_symlink",
+      })) as { commit: string; pr: string };
+      const committed = await runCommand(`git show --name-status --format= ${opened.commit}`, root);
+
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1003");
+      expect(committed.stdout.trim()).toBe("A\tlink");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("returns an existing PR URL without recreating it", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-existing-url-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-existing-url" }));
+    await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const commitSha = (await runCommand("git rev-parse HEAD", root)).stdout.trim();
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_existing_url",
+      findingIds: [],
+      featureIds: [],
+      status: "validated",
+      plan: "Already opened.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [],
+      provider: null,
+      git: {
+        baseSha: commitSha,
+        commitSha,
+        branchName: "clawpatch/pat_open_pr_existing_url",
+        prUrl: "https://github.com/openclaw/clawpatch/pull/1004",
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-existing-url-gh-");
+    const failingGh = join(ghScripts, "fail-gh.sh");
+    await writeFixture(ghScripts, "fail-gh.sh", "#!/bin/sh\nexit 42\n");
+    await chmod(failingGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = failingGh;
+      await expect(
+        openPrCommand(context, {
+          patch: "pat_open_pr_existing_url",
+          base: "main",
+        }),
+      ).resolves.toMatchObject({
+        pr: "https://github.com/openclaw/clawpatch/pull/1004",
+        branch: "clawpatch/pat_open_pr_existing_url",
+        commit: commitSha,
+      });
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("persists the patch commit before failing external PR creation", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-retry-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr-retry", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-retry-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+    const now = new Date().toISOString();
+    const patch: PatchAttempt = {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_retry",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+    await writePatchAttempt(paths, patch);
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-gh-");
+    const failingGh = join(ghScripts, "fail-gh.sh");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(ghScripts, "fail-gh.sh", "#!/bin/sh\nexit 42\n");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/999\n",
+    );
+    await chmod(failingGh, 0o755);
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = failingGh;
+      await expect(
+        openPrCommand(context, {
+          patch: patch.patchAttemptId,
+          base: "main",
+          branch: "clawpatch/pat_open_pr_retry",
+        }),
+      ).rejects.toMatchObject({ code: "github-failure" });
+      const afterFailure = (await readPatchAttempts(paths)).find(
+        (candidate) => candidate.patchAttemptId === patch.patchAttemptId,
+      );
+      expect(afterFailure?.git.commitSha).toMatch(/^[a-f0-9]{40}$/u);
+      expect(afterFailure?.git.branchName).toBe("clawpatch/pat_open_pr_retry");
+      const recordedCommit = afterFailure?.git.commitSha;
+      if (recordedCommit === null || recordedCommit === undefined) {
+        throw new Error("missing recorded patch commit");
+      }
+
+      await writeFixture(root, "src/unrelated.ts", "export const unrelated = true;\n");
+      await checkCommand(root, "git add src/unrelated.ts");
+      await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "unrelated"');
+      const advancedHead = (await runCommand("git rev-parse HEAD", root)).stdout.trim();
+      expect(advancedHead).not.toBe(recordedCommit);
+
+      process.env["CLAWPATCH_GH"] = successGh;
+      await expect(
+        openPrCommand(context, {
+          patch: patch.patchAttemptId,
+          base: "main",
+        }),
+      ).resolves.toMatchObject({
+        pr: "https://github.com/openclaw/clawpatch/pull/999",
+      });
+      const remoteHead = (
+        await runCommand("git ls-remote --heads origin clawpatch/pat_open_pr_retry", root)
+      ).stdout
+        .trim()
+        .split(/\s+/u)[0];
+      expect(remoteHead).toBe(recordedCommit);
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("creates first PR branches from the recorded patch base", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-recorded-base-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr-recorded-base", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const baseSha = (await runCommand("git rev-parse HEAD", root)).stdout.trim();
+    const origin = await fixtureRoot("clawpatch-open-pr-recorded-base-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+    await writeFixture(root, "src/unrelated.ts", "export const unrelated = true;\n");
+    await checkCommand(root, "git add src/unrelated.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "unrelated"');
+    const advancedHead = (await runCommand("git rev-parse HEAD", root)).stdout.trim();
+    expect(advancedHead).not.toBe(baseSha);
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_recorded_base",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha,
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-recorded-base-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1005\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_recorded_base",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_recorded_base",
+      })) as { commit: string; pr: string };
+      const parent = (
+        await runCommand(`git show -s --format=%P ${opened.commit}`, root)
+      ).stdout.trim();
+      const committed = await runCommand(`git show --name-only --format= ${opened.commit}`, root);
+
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1005");
+      expect(parent).toBe(baseSha);
+      expect(committed.stdout.trim().split("\n")).toEqual(["src/index.ts"]);
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("switches to an existing patch branch when opening a PR", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-existing-branch-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr-existing-branch", bin: { open: "src/index.ts" } }),
+    );
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG';\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json src/index.ts");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-existing-branch-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await checkCommand(root, "git branch clawpatch/pat_open_pr_existing_branch");
+    await writeFixture(root, "src/index.ts", "export const value = 'fixed';\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_existing_branch",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["src/index.ts"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: "clawpatch/pat_open_pr_existing_branch",
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-existing-branch-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1002\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const preview = (await openPrCommand(context, {
+        patch: "pat_open_pr_existing_branch",
+        base: "main",
+        dryRun: true,
+      })) as { commands: string[] };
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_existing_branch",
+        base: "main",
+      })) as { branch: string; pr: string };
+      const currentBranch = (await runCommand("git branch --show-current", root)).stdout.trim();
+
+      expect(preview.commands).toEqual(
+        expect.arrayContaining(["git switch clawpatch/pat_open_pr_existing_branch"]),
+      );
+      expect(preview.commands).toEqual(
+        expect.not.arrayContaining(["git switch -c clawpatch/pat_open_pr_existing_branch"]),
+      );
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1002");
+      expect(opened.branch).toBe("clawpatch/pat_open_pr_existing_branch");
+      expect(currentBranch).toBe("clawpatch/pat_open_pr_existing_branch");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("opens PRs for quoted paths without committing pre-staged state", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-pathspec-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "open-pr-pathspec", bin: { open: "docs/foo bar.md" } }),
+    );
+    await writeFixture(root, "docs/foo bar.md", "TODO_BUG\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json docs");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-pathspec-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await checkCommand(root, "git add .clawpatch/config.json");
+    await writeFixture(root, "docs/foo bar.md", "fixed\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_pathspec",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Replace the marker value.",
+      filesChanged: ["docs/foo bar.md"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-pathspec-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1000\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_pathspec",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_pathspec",
+      })) as { commit: string; pr: string };
+      const committed = await runCommand(`git show --name-only --format= ${opened.commit}`, root);
+      const cached = await runCommand("git diff --cached --name-only", root);
+
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1000");
+      expect(committed.stdout.trim().split("\n")).toEqual(["docs/foo bar.md"]);
+      expect(cached.stdout.trim().split("\n")).toContain(".clawpatch/config.json");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("opens PRs for literal names that look like git pathspec magic", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-literal-pathspec-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-literal-pathspec" }));
+    await writeFixture(root, "README.md", "base\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json README.md");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-literal-pathspec-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await writeFixture(root, ":(top)README.md", "literal\n");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_literal_pathspec",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Add the reviewed literal pathspec-looking file.",
+      filesChanged: [":(top)README.md"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-literal-pathspec-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1002\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const preview = (await openPrCommand(context, {
+        patch: "pat_open_pr_literal_pathspec",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_literal_pathspec",
+        dryRun: true,
+      })) as { commands: string[] };
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_literal_pathspec",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_literal_pathspec",
+      })) as { commit: string; pr: string };
+      const committed = await runCommand(`git show --name-status --format= ${opened.commit}`, root);
+      const readme = await readFile(join(root, "README.md"), "utf8");
+
+      expect(preview.commands).toContain("git add -- ':(literal):(top)README.md'");
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1002");
+      expect(committed.stdout.trim()).toBe("A\t:(top)README.md");
+      expect(readme).toBe("base\n");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("opens PRs for staged renames when patch records only the destination", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-rename-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-rename" }));
+    await writeFixture(root, "docs/old.md", "TODO_BUG\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json docs");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const origin = await fixtureRoot("clawpatch-open-pr-rename-origin-");
+    await checkCommand(root, `git init --bare -q ${origin}`);
+    await checkCommand(root, `git remote add origin ${origin}`);
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await checkCommand(root, "git mv docs/old.md docs/new.md");
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_rename",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Rename the reviewed file.",
+      filesChanged: ["docs/new.md"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const ghScripts = await fixtureRoot("clawpatch-open-pr-rename-gh-");
+    const successGh = join(ghScripts, "success-gh.sh");
+    await writeFixture(
+      ghScripts,
+      "success-gh.sh",
+      "#!/bin/sh\necho https://github.com/openclaw/clawpatch/pull/1001\n",
+    );
+    await chmod(successGh, 0o755);
+    const previousGh = process.env["CLAWPATCH_GH"];
+    try {
+      process.env["CLAWPATCH_GH"] = successGh;
+      const preview = (await openPrCommand(context, {
+        patch: "pat_open_pr_rename",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_rename",
+        dryRun: true,
+      })) as { commands: string[] };
+      const opened = (await openPrCommand(context, {
+        patch: "pat_open_pr_rename",
+        base: "main",
+        branch: "clawpatch/pat_open_pr_rename",
+      })) as { commit: string; pr: string };
+      const committed = await runCommand(`git show --name-status --format= ${opened.commit}`, root);
+
+      expect(preview.commands).toContain("git add -- ':(literal)docs/new.md'");
+      expect(preview.commands).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/git commit .*docs\/new\.md.*docs\/old\.md/u),
+        ]),
+      );
+      expect(opened.pr).toBe("https://github.com/openclaw/clawpatch/pull/1001");
+      expect(committed.stdout.trim()).toBe("R100\tdocs/old.md\tdocs/new.md");
+    } finally {
+      if (previousGh === undefined) {
+        delete process.env["CLAWPATCH_GH"];
+      } else {
+        process.env["CLAWPATCH_GH"] = previousGh;
+      }
+    }
+  });
+
+  it("previews deletion patch PRs with update staging", async () => {
+    const root = await fixtureRoot("clawpatch-open-pr-delete-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "open-pr-delete" }));
+    await writeFixture(root, "docs/old.md", "TODO_BUG\n");
+    await initGit(root);
+    await checkCommand(root, "git add package.json docs");
+    await checkCommand(root, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const context = await makeContext(testOptions(root));
+    const paths = statePaths(join(root, ".clawpatch"));
+    await initCommand(context, {});
+    await rm(join(root, "docs/old.md"));
+    const now = new Date().toISOString();
+    await writePatchAttempt(paths, {
+      schemaVersion: 1,
+      patchAttemptId: "pat_open_pr_delete",
+      findingIds: [],
+      featureIds: [],
+      status: "applied",
+      plan: "Delete the reviewed file.",
+      filesChanged: ["docs/old.md"],
+      commandsRun: [],
+      testResults: [
+        {
+          command: "pnpm test",
+          cwd: root,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+        },
+      ],
+      provider: null,
+      git: {
+        baseSha: (await runCommand("git rev-parse HEAD", root)).stdout.trim(),
+        commitSha: null,
+        branchName: null,
+        prUrl: null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const preview = (await openPrCommand(context, {
+      patch: "pat_open_pr_delete",
+      base: "main",
+      branch: "clawpatch/pat_open_pr_delete",
+      dryRun: true,
+    })) as { commands: string[] };
+
+    expect(preview.commands).toContain("git add -u -- ':(literal)docs/old.md'");
+    expect(preview.commands).toEqual(
+      expect.arrayContaining([expect.stringMatching(/git commit .*docs\/old\.md/u)]),
+    );
+    expect(preview.commands).not.toContain("git add -- docs/old.md");
   });
 
   it("persists failed patch attempts when provider fix throws", async () => {

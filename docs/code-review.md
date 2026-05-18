@@ -23,10 +23,15 @@ Current behavior:
 - reviews with a bounded worker pool; default `--jobs` is `10`
 - emits progress to stderr unless `--quiet` is set
 - builds bounded prompt context from owned files, context files, and tests
+- includes a prompt context manifest with included files, omitted files, byte
+  counts, and truncation status
 - calls the configured provider
 - requires strict JSON output
+- rejects findings whose evidence cites files outside the prompt context, stale
+  line ranges, or quotes that do not match current file contents
 - writes findings under `.clawpatch/findings/`
 - appends analysis history to the feature record
+- records prompt byte and approximate token counts in feature analysis history
 - releases the feature lock
 
 ## Flags
@@ -46,6 +51,19 @@ clawpatch review --since HEAD~5        # review the last 5 commits
 If no features are touched by the diff, `review` exits cleanly with no findings.
 The same flag is available on `revalidate`; revalidation scopes open findings to
 features whose owned files changed.
+
+### CI command
+
+Use `clawpatch ci` when a GitHub Actions job should run the whole read-only
+review loop:
+
+```bash
+clawpatch ci --since origin/main --limit 20 --jobs 4 --output clawpatch-report.md
+```
+
+The command initializes `.clawpatch/` if needed, maps features, reviews the
+selected feature set, writes a Markdown report when `--output` is provided, and
+appends a compact summary to `GITHUB_STEP_SUMMARY` when that file is available.
 
 Progress uses stderr so `--json` stdout remains machine-readable. The worker
 pool is per-process, and lock files under `.clawpatch/locks/` prevent

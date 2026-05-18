@@ -1,27 +1,34 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ClawpatchError } from "./errors.js";
+import { REVIEW_PROMPT_FILE_CHAR_LIMIT, type ReviewPromptManifest } from "./prompt.js";
 import { ClawpatchConfig, FeatureRecord, ReviewOutput } from "./types.js";
 
 export async function validateReviewOutput(
   root: string,
   feature: FeatureRecord,
   config: ClawpatchConfig,
+  manifest: ReviewPromptManifest,
   output: ReviewOutput,
 ): Promise<ReviewOutput> {
   const included = includedReviewPaths(feature, config);
+  const promptFiles = new Map(manifest.includedFiles.map((file) => [normalizePath(file.path), file]));
   const cache = new Map<string, Promise<string>>();
   for (const file of output.inspected.files) {
     assertSafePath(file, "inspected file");
   }
-  const findings = output.findings.slice(0, config.review.maxFindingsPerFeature);
+  const findings = output.findings;
   for (const finding of findings) {
     if (finding.evidence.length === 0) {
       throwMalformed(`finding "${finding.title}" has no evidence`);
     }
     for (const evidence of finding.evidence) {
       assertIncludedPath(evidence.path, included, "evidence file");
-      const contents = await fileContents(root, evidence.path, cache);
+      const promptFile = promptFiles.get(normalizePath(evidence.path));
+      if (promptFile === undefined || !promptFile.readable) {
+        throwMalformed(`evidence file was not readable in review context: ${evidence.path}`);
+      }
+      const contents = await fileContents(root, evidence.path, promptFile.truncated, cache);
       assertLineRange(contents, evidence);
       assertQuote(contents, evidence);
     }
@@ -56,28 +63,31 @@ function assertSafePath(path: string, label: string): void {
 async function fileContents(
   root: string,
   path: string,
+  truncated: boolean,
   cache: Map<string, Promise<string>>,
 ): Promise<string> {
   const normalized = normalizePath(path);
-  const existing = cache.get(normalized);
+  const key = `${normalized}\0${truncated ? "truncated" : "full"}`;
+  const existing = cache.get(key);
   if (existing !== undefined) {
     return existing;
   }
-  const loaded = readIncludedFile(root, normalized);
-  cache.set(normalized, loaded);
+  const loaded = readIncludedFile(root, normalized, truncated);
+  cache.set(key, loaded);
   return loaded;
 }
 
-async function readIncludedFile(root: string, path: string): Promise<string> {
+async function readIncludedFile(root: string, path: string, truncated: boolean): Promise<string> {
   const full = resolve(root, path);
   const realRoot = await realpath(root).catch(() => root);
   const realFull = await realpath(full).catch(() => null);
   if (realFull === null || !isInside(realRoot, realFull)) {
     throwMalformed(`evidence file is not readable inside repository: ${path}`);
   }
-  return readFile(full, "utf8").catch(() => {
+  const contents = await readFile(full, "utf8").catch(() => {
     throwMalformed(`evidence file is not readable inside repository: ${path}`);
   });
+  return truncated ? contents.slice(0, REVIEW_PROMPT_FILE_CHAR_LIMIT) : contents;
 }
 
 function assertLineRange(

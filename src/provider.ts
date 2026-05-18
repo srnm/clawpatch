@@ -364,6 +364,57 @@ const mockProvider: Provider = {
     const evidencePath = prompt.includes("BAD_EVIDENCE")
       ? "src/not-included.ts"
       : (firstPromptFileWith(prompt, "TODO_BUG") ?? "src/index.ts");
+    if (prompt.includes("DESLOPIFY_LATE")) {
+      return {
+        findings: [
+          {
+            title: "General bug first",
+            category: "bug",
+            severity: "medium",
+            confidence: "high",
+            evidence: [
+              {
+                path: evidencePath,
+                startLine: null,
+                endLine: null,
+                symbol: null,
+                quote: "TODO_BUG",
+              },
+            ],
+            reasoning: "Mock provider found an explicit bug marker.",
+            reproduction: null,
+            recommendation: "Replace marker with real handling.",
+            whyTestsDoNotAlreadyCoverThis:
+              "Mock fixtures do not encode this marker as intended behavior.",
+            suggestedRegressionTest: "Add a focused test that fails when TODO_BUG is present.",
+            minimumFixScope: "Replace the marker in the owning feature file.",
+          },
+          {
+            title: "Late simplification finding",
+            category: "maintainability",
+            severity: "low",
+            confidence: "high",
+            evidence: [
+              {
+                path: evidencePath,
+                startLine: null,
+                endLine: null,
+                symbol: null,
+                quote: "DESLOPIFY_LATE",
+              },
+            ],
+            reasoning: "Mock provider returned a simplification finding after a general finding.",
+            reproduction: null,
+            recommendation: "Keep the deslopify finding after mode filtering.",
+            whyTestsDoNotAlreadyCoverThis:
+              "Mock fixtures need to prove filtering occurs before the finding cap.",
+            suggestedRegressionTest: null,
+            minimumFixScope: "Filter before capping.",
+          },
+        ],
+        inspected: { files: [evidencePath], symbols: [], notes: ["mock mixed findings"] },
+      };
+    }
     return {
       findings: [
         {

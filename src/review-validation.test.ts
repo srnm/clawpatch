@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "./config.js";
+import type { ReviewPromptManifest } from "./prompt.js";
 import { validateReviewOutput } from "./review-validation.js";
 import { fixtureRoot, writeFixture } from "./test-helpers.js";
 import type { FeatureRecord, ReviewOutput } from "./types.js";
@@ -10,7 +11,13 @@ describe("validateReviewOutput", () => {
     await writeFixture(root, "src/index.ts", "const value = 'TODO_BUG';\n");
 
     await expect(
-      validateReviewOutput(root, feature("src/index.ts"), defaultConfig(), output("src/index.ts")),
+      validateReviewOutput(
+        root,
+        feature("src/index.ts"),
+        defaultConfig(),
+        manifest("src/index.ts"),
+        output("src/index.ts"),
+      ),
     ).resolves.toMatchObject({ findings: [{ title: "Bug" }] });
   });
 
@@ -20,7 +27,13 @@ describe("validateReviewOutput", () => {
     await writeFixture(root, "src/other.ts", "const value = 'TODO_BUG';\n");
 
     await expect(
-      validateReviewOutput(root, feature("src/index.ts"), defaultConfig(), output("src/other.ts")),
+      validateReviewOutput(
+        root,
+        feature("src/index.ts"),
+        defaultConfig(),
+        manifest("src/index.ts"),
+        output("src/other.ts"),
+      ),
     ).rejects.toMatchObject({ code: "malformed-output" });
   });
 
@@ -33,6 +46,7 @@ describe("validateReviewOutput", () => {
         root,
         feature("src/index.ts"),
         defaultConfig(),
+        manifest("src/index.ts"),
         output("src/index.ts", { startLine: 9, endLine: 9, quote: "real" }),
       ),
     ).rejects.toMatchObject({ code: "malformed-output" });
@@ -42,6 +56,7 @@ describe("validateReviewOutput", () => {
         root,
         feature("src/index.ts"),
         defaultConfig(),
+        manifest("src/index.ts"),
         output("src/index.ts", { startLine: 1, endLine: 1, quote: "missing" }),
       ),
     ).rejects.toMatchObject({ code: "malformed-output" });
@@ -60,40 +75,25 @@ describe("validateReviewOutput", () => {
         root,
         feature("src/index.ts"),
         defaultConfig(),
+        manifest("src/index.ts"),
         output("src/index.ts", { startLine: 2, endLine: 2, quote: "TODO_BUG" }),
       ),
     ).rejects.toMatchObject({ code: "malformed-output" });
   });
 
-  it("validates only findings kept by the feature finding cap", async () => {
-    const root = await fixtureRoot("clawpatch-review-validation-cap-");
-    await writeFixture(root, "src/index.ts", "const value = 'TODO_BUG';\n");
-    await writeFixture(root, "src/other.ts", "const value = 'hidden';\n");
-    const config = defaultConfig();
-    config.review.maxFindingsPerFeature = 1;
-    const providerOutput = output("src/index.ts");
-    const keptFinding = providerOutput.findings[0];
-    if (keptFinding === undefined) {
-      throw new Error("fixture output did not include a finding");
-    }
-    providerOutput.findings.push({
-      ...keptFinding,
-      title: "Discarded",
-      evidence: [
-        {
-          path: "src/other.ts",
-          startLine: 1,
-          endLine: 1,
-          symbol: null,
-          quote: "hidden",
-        },
-      ],
-    });
-    providerOutput.inspected.files.push("src/other.ts");
+  it("rejects evidence that only exists beyond the truncated prompt text", async () => {
+    const root = await fixtureRoot("clawpatch-review-validation-truncated-");
+    await writeFixture(root, "src/index.ts", `${"a".repeat(24_000)}\nconst value = 'TODO_TAIL';\n`);
 
     await expect(
-      validateReviewOutput(root, feature("src/index.ts"), config, providerOutput),
-    ).resolves.toMatchObject({ findings: [{ title: "Bug" }] });
+      validateReviewOutput(
+        root,
+        feature("src/index.ts"),
+        defaultConfig(),
+        manifest("src/index.ts", { truncated: true }),
+        output("src/index.ts", { startLine: null, endLine: null, quote: "TODO_TAIL" }),
+      ),
+    ).rejects.toMatchObject({ code: "malformed-output" });
   });
 });
 
@@ -151,5 +151,30 @@ function output(
       },
     ],
     inspected: { files: [path], symbols: [], notes: [] },
+  };
+}
+
+function manifest(
+  path: string,
+  options: { truncated?: boolean; readable?: boolean } = {},
+): ReviewPromptManifest {
+  const readable = options.readable ?? true;
+  return {
+    maxOwnedFiles: defaultConfig().review.maxOwnedFiles,
+    maxContextFiles: defaultConfig().review.maxContextFiles,
+    includedFiles: [
+      {
+        path,
+        role: "owned",
+        bytes: readable ? 1 : 0,
+        includedBytes: readable ? 1 : 0,
+        truncated: options.truncated ?? false,
+        readable,
+        skippedReason: readable ? null : "unreadable",
+      },
+    ],
+    omittedFiles: [],
+    promptBytes: 1,
+    approximateTokens: 1,
   };
 }

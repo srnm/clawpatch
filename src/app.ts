@@ -673,16 +673,24 @@ async function reviewFeature(options: ReviewFeatureOptions): Promise<{ findingId
       mode,
       customPrompt,
     );
+    const providerOutput = await provider.review(loaded.root, reviewPrompt.prompt, providerOptions(config));
+    const reviewOutput = {
+      ...providerOutput,
+      findings: reviewFindingsForMode(providerOutput.findings, mode).slice(
+        0,
+        config.review.maxFindingsPerFeature,
+      ),
+    };
     const output = await validateReviewOutput(
       loaded.root,
       lockedFeature,
       config,
-      await provider.review(loaded.root, reviewPrompt.prompt, providerOptions(config)),
+      reviewPrompt.manifest,
+      reviewOutput,
     );
-    const modeFindings = reviewFindingsForMode(output.findings, mode);
-    const records = modeFindings
-      .slice(0, config.review.maxFindingsPerFeature)
-      .map((finding) => findingFromOutput(finding, lockedFeature.featureId, currentRunId));
+    const records = output.findings.map((finding) =>
+      findingFromOutput(finding, lockedFeature.featureId, currentRunId),
+    );
     const findingIds: string[] = [];
     for (const finding of records) {
       const existingFinding = await readFinding(loaded.paths, finding.findingId);

@@ -3032,6 +3032,48 @@ describe("workflow", () => {
     delete process.env["CLAWPATCH_PROVIDER"];
   });
 
+  it("applies the finding cap after deslopify mode filtering", async () => {
+    const root = await fixtureRoot("clawpatch-deslopify-cap-");
+    await writeFixture(root, "package.json", JSON.stringify({ name: "deslopify-cap" }));
+    await writeFixture(root, "src/index.ts", "export const value = 'TODO_BUG DESLOPIFY_LATE';\n");
+    const previousProvider = process.env["CLAWPATCH_PROVIDER"];
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    try {
+      const context = await makeContext(testOptions(root));
+      const config = defaultConfig();
+      config.review.maxFindingsPerFeature = 1;
+
+      await initCommand(context, {});
+      await writeFixture(root, ".clawpatch/config.json", JSON.stringify(config, null, 2));
+      await mapCommand(context);
+      const paths = statePaths(join(root, ".clawpatch"));
+      const sourceFeature = (await readFeatures(paths)).find((feature) =>
+        feature.ownedFiles.some((file) => file.path === "src/index.ts"),
+      );
+      if (sourceFeature === undefined) {
+        throw new Error("missing source feature");
+      }
+      const reviewed = await reviewCommand(context, {
+        feature: sourceFeature.featureId,
+        mode: "deslopify",
+      });
+      const findings = await readFindings(paths);
+
+      expect(reviewed).toMatchObject({ findings: 1 });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        title: "Late simplification finding",
+        category: "maintainability",
+      });
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env["CLAWPATCH_PROVIDER"];
+      } else {
+        process.env["CLAWPATCH_PROVIDER"] = previousProvider;
+      }
+    }
+  });
+
   it("does not include escaped feature paths in prompts", async () => {
     const root = await fixtureRoot("clawpatch-path-escape-");
     const siblingSecret = join(root, "..", "secret.txt");

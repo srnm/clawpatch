@@ -4,6 +4,8 @@ import { ClawpatchConfig, FeatureRecord, FindingRecord, ProjectRecord } from "./
 
 export type ReviewMode = "default" | "deslopify";
 
+export const REVIEW_PROMPT_FILE_CHAR_LIMIT = 24_000;
+
 export type ReviewPromptFileRole = "owned" | "context";
 
 export type ReviewPromptFileManifest = {
@@ -362,7 +364,9 @@ async function fileBlockWithManifest(
   }
   const bytes = Buffer.byteLength(contents, "utf8");
   const trimmed =
-    contents.length > 24_000 ? `${contents.slice(0, 24_000)}\n...[truncated]` : contents;
+    contents.length > REVIEW_PROMPT_FILE_CHAR_LIMIT
+      ? `${contents.slice(0, REVIEW_PROMPT_FILE_CHAR_LIMIT)}\n...[truncated]`
+      : contents;
   return {
     block: `--- ${path}\n${trimmed}`,
     manifest: {

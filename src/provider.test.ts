@@ -9,11 +9,17 @@ const {
   addCodexSandboxArgs,
   addCodexModelArgs,
   acpxFailureMessage,
+  assertCursorRuntimeVersionAllowed,
   codexFailureMessage,
+  cursorAgentArgs,
+  cursorEnv,
+  cursorFailureMessage,
   extractAcpxJson,
+  extractCursorJson,
   extractOpencodeJson,
   parseAcpxAgent,
   parseCodexJson,
+  parseSemver,
   piThinkingLevel,
   providerJsonSchema,
 } = __testing;
@@ -245,6 +251,180 @@ describe("piThinkingLevel", () => {
 
   it("passes supported pi thinking levels through", () => {
     expect(piThinkingLevel("xhigh")).toBe("xhigh");
+  });
+});
+
+describe("Cursor provider", () => {
+  it("builds the verified trusted print JSON command shape", () => {
+    const args = cursorAgentArgs("prompt", {
+      model: "cursor-model",
+      reasoningEffort: "xhigh",
+      skipGitRepoCheck: true,
+    });
+
+    expect(args).toEqual([
+      "--trust",
+      "-p",
+      "--output-format",
+      "json",
+      "--model",
+      "cursor-model",
+      "prompt",
+    ]);
+    expect(args).not.toContain("--force");
+    expect(args).not.toContain("--yolo");
+    expect(args).not.toContain("--mode");
+  });
+
+  it("extracts Clawpatch JSON from the Cursor success envelope result", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: '```json\n{"findings":[],"inspected":{"files":[],"symbols":[],"notes":[]}}\n```',
+    });
+
+    expect(extractCursorJson(stdout)).toEqual({
+      findings: [],
+      inspected: { files: [], symbols: [], notes: [] },
+    });
+  });
+
+  it("accepts Cursor success envelopes without a subtype", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      is_error: false,
+      result: '{"outcome":"fixed","reasoning":"ok","commands":[]}',
+    });
+
+    expect(extractCursorJson(stdout)).toEqual({
+      outcome: "fixed",
+      reasoning: "ok",
+      commands: [],
+    });
+  });
+
+  it("rejects Cursor error envelopes", () => {
+    expect(() =>
+      extractCursorJson(
+        JSON.stringify({
+          type: "result",
+          subtype: "error",
+          is_error: true,
+          result: "auth required",
+        }),
+      ),
+    ).toThrow(/cursor provider returned an error envelope/u);
+  });
+
+  it("rejects missing result text", () => {
+    expectMalformed(
+      () =>
+        extractCursorJson(JSON.stringify({ type: "result", subtype: "success", is_error: false })),
+      /missing result text/u,
+    );
+  });
+
+  it("does not preview malformed Cursor result text", () => {
+    const secretPrompt = "SOURCE_CONTEXT_SECRET";
+
+    expect(() =>
+      extractCursorJson(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: `not json ${secretPrompt}`,
+        }),
+      ),
+    ).toThrow(/result chars=\d+/u);
+    expect(() =>
+      extractCursorJson(
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: `not json ${secretPrompt}`,
+        }),
+      ),
+    ).not.toThrow(secretPrompt);
+  });
+
+  it("rejects multiple Cursor JSON envelopes", () => {
+    const stdout = [
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "{}" }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "{}" }),
+    ].join("\n");
+
+    expectMalformed(() => extractCursorJson(stdout), /produced 2 JSON envelopes/u);
+  });
+
+  it("does not preview stdout unless it looks like auth or quota output", () => {
+    const secretPrompt = "SOURCE_CONTEXT_SECRET";
+
+    expect(cursorFailureMessage(secretPrompt, "", 1)).not.toContain(secretPrompt);
+    expect(cursorFailureMessage("login required", "", 1)).toContain("authentication required");
+  });
+
+  it("does not preview Cursor stderr on failure", () => {
+    const secretPrompt = "SOURCE_CONTEXT_SECRET";
+
+    expect(cursorFailureMessage("", secretPrompt, 1)).not.toContain(secretPrompt);
+  });
+
+  it("keeps Cursor subprocess environment to an exact allowlist", () => {
+    const originalSecret = process.env["CURSOR_RANDOM_SECRET"];
+    const originalApiKey = process.env["CURSOR_AGENT_API_KEY"];
+    const originalHome = process.env["HOME"];
+    process.env["CURSOR_RANDOM_SECRET"] = "nope";
+    process.env["CURSOR_AGENT_API_KEY"] = "ok";
+    try {
+      const env = cursorEnv({
+        home: "/tmp/clawpatch-cursor/home",
+        xdgConfig: "/tmp/clawpatch-cursor/xdg-config",
+        xdgCache: "/tmp/clawpatch-cursor/xdg-cache",
+        xdgData: "/tmp/clawpatch-cursor/xdg-data",
+        temp: "/tmp/clawpatch-cursor/tmp",
+      });
+
+      expect(env["CURSOR_AGENT_API_KEY"]).toBe("ok");
+      expect(env["CURSOR_RANDOM_SECRET"]).toBeUndefined();
+      expect(env["HOME"]).toBe("/tmp/clawpatch-cursor/home");
+      expect(env["HOME"]).not.toBe(originalHome);
+      expect(env["XDG_CONFIG_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-config");
+      expect(env["XDG_CACHE_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-cache");
+      expect(env["XDG_DATA_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-data");
+    } finally {
+      if (originalSecret === undefined) {
+        delete process.env["CURSOR_RANDOM_SECRET"];
+      } else {
+        process.env["CURSOR_RANDOM_SECRET"] = originalSecret;
+      }
+      if (originalApiKey === undefined) {
+        delete process.env["CURSOR_AGENT_API_KEY"];
+      } else {
+        process.env["CURSOR_AGENT_API_KEY"] = originalApiKey;
+      }
+    }
+  });
+
+  it("parses semver for Cursor advisory checks", () => {
+    expect(parseSemver("2.4.9")).toEqual([2, 4, 9]);
+    expect(parseSemver("v2.5")).toEqual([2, 5, 0]);
+    expect(parseSemver("2026.05.16-0338208")).toEqual([2026, 5, 16]);
+  });
+
+  it("uses Cursor app version for date-formatted CLI builds", () => {
+    expect(() => assertCursorRuntimeVersionAllowed("2026.05.16-0338208", "3.2.16")).not.toThrow();
+    expect(() => assertCursorRuntimeVersionAllowed("2026.05.16-0338208", "2.4.9")).toThrow(
+      /blocked vulnerable Cursor version/u,
+    );
+  });
+
+  it("does not treat date-formatted CLI builds as advisory proof by themselves", () => {
+    expect(() => assertCursorRuntimeVersionAllowed("2026.05.16-0338208", null)).toThrow(
+      /could not verify Cursor app\/runtime version/u,
+    );
   });
 });
 
@@ -561,6 +741,7 @@ describe("providerByName", () => {
     expect(providerByName("grok").name).toBe("grok");
     expect(providerByName("opencode").name).toBe("opencode");
     expect(providerByName("pi").name).toBe("pi");
+    expect(providerByName("cursor").name).toBe("cursor");
   });
 
   it("still supports codex, mock, and mock-fail", () => {

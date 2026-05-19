@@ -18,6 +18,7 @@ Provider names today:
 - `grok`: shells out to the xAI Grok Build CLI in headless mode (`grok --prompt-file`)
 - `opencode`: shells out to `opencode run --format json`
 - `pi`: shells out to `pi -p` (non-interactive print mode)
+- `cursor`: shells out to `cursor-agent -p --output-format json`
 - `mock`: deterministic provider for tests and fixtures
 - `mock-fail`: failure provider for tests
 
@@ -195,7 +196,50 @@ review and revalidate, but enforcement depends on pi honoring the tool allowlist
 For write operations during `fix`, the agent has full filesystem and shell access.
 For untrusted code, run `clawpatch fix --provider pi` inside an isolated checkout.
 
+## Cursor
+
+The `cursor` provider shells out to the local Cursor Agent CLI in headless print
+mode.
+
+Verify local availability:
+
+```bash
+cursor-agent --version
+clawpatch doctor --provider cursor
+```
+
+Provider selection:
+
+```bash
+clawpatch review --provider cursor
+CLAWPATCH_PROVIDER=cursor clawpatch review
+clawpatch fix --finding <id> --provider cursor --model <model>
+clawpatch doctor --provider cursor
+```
+
+How the Cursor provider works:
+
+- Headless mode: `cursor-agent --trust -p --output-format json "<prompt>"`
+- Output: parses Cursor's `type: "result"` JSON envelope and then extracts the
+  Clawpatch JSON object from the `result` text
+- Prompt delivery: currently uses the positional prompt path, capped at 128000
+  UTF-8 bytes
+- Model selection: passes `--model <model>` when configured
+- Reasoning effort and `skipGitRepoCheck`: not mapped to Cursor CLI flags
+- Timeout: 180 seconds by default, override with
+  `CLAWPATCH_CURSOR_TIMEOUT_MS` or `CLAWPATCH_PROVIDER_TIMEOUT_MS`
+- Advisory handling: semver-like Cursor versions below `2.5.0` are blocked for
+  CVE-2026-26268 / GHSA-8pcm-8jpx-hv8r
+
+Permission caveat: Cursor's JSON output is documented for print mode, but this
+provider does not claim provider-enforced read-only review/revalidate behavior.
+The implementation uses `--trust` for the explicit trusted-workspace path and
+never uses `--force` or `--yolo`. Complete the linked HITL verification before
+using this provider as evidence for an upstream provider PR, especially for
+ambient rules, MCP configuration, positional prompt exposure, and any claimed
+read-only mode.
+
 Direct OpenAI API, local-model, and multi-model panel providers are not
 implemented yet. The `acpx` provider is the generic route for ACP-compatible
-agents; the `grok`, `opencode`, and `pi` providers are direct integrations
+agents; the `grok`, `opencode`, `pi`, and `cursor` providers are direct integrations
 for local CLIs.

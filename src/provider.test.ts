@@ -275,7 +275,6 @@ describe("Cursor provider", () => {
   it("builds the verified trusted read-only print JSON command shape", () => {
     const args = cursorAgentArgs(
       "/repo",
-      "prompt",
       {
         model: "cursor-model",
         reasoningEffort: "xhigh",
@@ -295,7 +294,6 @@ describe("Cursor provider", () => {
       "ask",
       "--model",
       "cursor-model",
-      "prompt",
     ]);
     expect(args).not.toContain("--force");
     expect(args).not.toContain("--yolo");
@@ -304,7 +302,6 @@ describe("Cursor provider", () => {
   it("leaves write-mode Cursor execution ungated by read-only mode flags", () => {
     const args = cursorAgentArgs(
       "/repo",
-      "prompt",
       {
         model: null,
         reasoningEffort: null,
@@ -313,15 +310,7 @@ describe("Cursor provider", () => {
       false,
     );
 
-    expect(args).toEqual([
-      "--trust",
-      "-p",
-      "--output-format",
-      "json",
-      "--workspace",
-      "/repo",
-      "prompt",
-    ]);
+    expect(args).toEqual(["--trust", "-p", "--output-format", "json", "--workspace", "/repo"]);
   });
 
   it("keeps Cursor provider execution disabled by default", async () => {

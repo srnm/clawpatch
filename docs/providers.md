@@ -220,12 +220,11 @@ clawpatch doctor --provider cursor
 
 How the Cursor provider works:
 
-- Headless mode: `cursor-agent --trust -p --output-format json --workspace <root> "<prompt>"`
+- Headless mode: `cursor-agent --trust -p --output-format json --workspace <root>`
 - Read-only operations: also pass Cursor's documented `--mode ask`
 - Output: parses Cursor's `type: "result"` JSON envelope and then extracts the
   Clawpatch JSON object from the `result` text
-- Prompt delivery: currently uses the positional prompt path, capped at 128000
-  UTF-8 bytes
+- Prompt delivery: writes the full Clawpatch prompt to Cursor's stdin
 - Model selection: passes `--model <model>` when configured
 - Model names: pass Cursor model ids, for example `composer-2.5` for Composer
   2.5 without fast mode

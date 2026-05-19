@@ -202,7 +202,6 @@ const grokProvider: Provider = {
 
 const PI_DEFAULT_TIMEOUT_MS = 180_000;
 const CURSOR_DEFAULT_TIMEOUT_MS = 300_000;
-const CURSOR_POSITIONAL_PROMPT_MAX_BYTES = 128_000;
 const CURSOR_MIN_SAFE_APP_VERSION = "2.5.0";
 const CURSOR_DARWIN_INFO_PLIST = "/Applications/Cursor.app/Contents/Info.plist";
 const CURSOR_EXPERIMENTAL_ENV = "CLAWPATCH_CURSOR_EXPERIMENTAL";
@@ -290,15 +289,8 @@ async function runCursorJson(
   readOnly: boolean,
 ): Promise<unknown> {
   const fullPrompt = cursorPrompt(prompt, schema, readOnly);
-  if (Buffer.byteLength(fullPrompt, "utf8") > CURSOR_POSITIONAL_PROMPT_MAX_BYTES) {
-    throw new ClawpatchError(
-      `cursor provider prompt exceeds ${CURSOR_POSITIONAL_PROMPT_MAX_BYTES} byte positional prompt limit`,
-      2,
-      "invalid-usage",
-    );
-  }
-  const args = cursorAgentArgs(root, fullPrompt, options, readOnly);
-  const result = await runCursorAgent(root, args);
+  const args = cursorAgentArgs(root, options, readOnly);
+  const result = await runCursorAgent(root, args, fullPrompt);
   if (result.exitCode !== 0) {
     throw new ClawpatchError(
       cursorFailureMessage(result.stdout, result.stderr, result.exitCode),
@@ -309,12 +301,7 @@ async function runCursorJson(
   return extractCursorJson(result.stdout);
 }
 
-function cursorAgentArgs(
-  root: string,
-  prompt: string,
-  options: ProviderOptions,
-  readOnly: boolean,
-): string[] {
+function cursorAgentArgs(root: string, options: ProviderOptions, readOnly: boolean): string[] {
   const args = ["--trust", "-p", "--output-format", "json", "--workspace", root];
   if (readOnly) {
     args.push("--mode", "ask");
@@ -322,12 +309,15 @@ function cursorAgentArgs(
   if (options.model !== null) {
     args.push("--model", options.model);
   }
-  args.push(prompt);
   return args;
 }
 
-async function runCursorAgent(root: string, args: string[]): Promise<CommandResult> {
-  return await runCommandArgs("cursor-agent", args, root, undefined, {
+async function runCursorAgent(
+  root: string,
+  args: string[],
+  input?: string,
+): Promise<CommandResult> {
+  return await runCommandArgs("cursor-agent", args, root, input, {
     trimOutput: false,
     timeoutMs: cursorTimeoutMs(),
     env: cursorEnv(),

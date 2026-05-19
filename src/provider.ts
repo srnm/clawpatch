@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCommandArgs } from "./exec.js";
@@ -289,7 +289,6 @@ async function runCursorJson(
   schema: object,
   readOnly: boolean,
 ): Promise<unknown> {
-  assertCursorApiKeyAvailable();
   const fullPrompt = cursorPrompt(prompt, schema, readOnly);
   if (Buffer.byteLength(fullPrompt, "utf8") > CURSOR_POSITIONAL_PROMPT_MAX_BYTES) {
     throw new ClawpatchError(
@@ -328,23 +327,11 @@ function cursorAgentArgs(
 }
 
 async function runCursorAgent(root: string, args: string[]): Promise<CommandResult> {
-  const dir = await mkdtemp(join(tmpdir(), "clawpatch-cursor-"));
-  try {
-    const home = join(dir, "home");
-    const xdgConfig = join(dir, "xdg-config");
-    const xdgCache = join(dir, "xdg-cache");
-    const xdgData = join(dir, "xdg-data");
-    const temp = join(dir, "tmp");
-    await Promise.all([home, xdgConfig, xdgCache, xdgData, temp].map((path) => mkdir(path)));
-    return await runCommandArgs("cursor-agent", args, root, undefined, {
-      trimOutput: false,
-      timeoutMs: cursorTimeoutMs(),
-      env: cursorEnv({ home, xdgConfig, xdgCache, xdgData, temp }),
-      replaceEnv: true,
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-  }
+  return await runCommandArgs("cursor-agent", args, root, undefined, {
+    trimOutput: false,
+    timeoutMs: cursorTimeoutMs(),
+    env: cursorEnv(),
+  });
 }
 
 function cursorPrompt(prompt: string, schema: object, readOnly: boolean): string {
@@ -477,17 +464,6 @@ function assertCursorWriteEnabled(): void {
   );
 }
 
-function assertCursorApiKeyAvailable(): void {
-  if ((process.env["CURSOR_API_KEY"] ?? "").trim().length > 0) {
-    return;
-  }
-  throw new ClawpatchError(
-    "cursor provider requires CURSOR_API_KEY for isolated headless execution; host HOME authentication is intentionally not used",
-    4,
-    "provider-auth",
-  );
-}
-
 function cursorTimeoutMs(): number {
   const raw =
     process.env["CLAWPATCH_CURSOR_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
@@ -498,29 +474,9 @@ function cursorTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : CURSOR_DEFAULT_TIMEOUT_MS;
 }
 
-function cursorEnv(paths: {
-  home: string;
-  xdgConfig: string;
-  xdgCache: string;
-  xdgData: string;
-  temp: string;
-}): NodeJS.ProcessEnv {
-  const allowed = ["PATH", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "CURSOR_API_KEY"];
+function cursorEnv(): NodeJS.ProcessEnv {
   return {
-    ...Object.fromEntries(
-      allowed.flatMap((name) => {
-        const value = process.env[name];
-        return value === undefined ? [] : [[name, value]];
-      }),
-    ),
-    HOME: paths.home,
-    TMPDIR: paths.temp,
-    TEMP: paths.temp,
-    TMP: paths.temp,
     NO_OPEN_BROWSER: "1",
-    XDG_CONFIG_HOME: paths.xdgConfig,
-    XDG_CACHE_HOME: paths.xdgCache,
-    XDG_DATA_HOME: paths.xdgData,
   };
 }
 

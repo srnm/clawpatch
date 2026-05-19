@@ -423,42 +423,10 @@ describe("Cursor provider", () => {
     expect(cursorFailureMessage("", secretPrompt, 1)).not.toContain(secretPrompt);
   });
 
-  it("keeps Cursor subprocess environment to an exact allowlist", () => {
-    const originalSecret = process.env["CURSOR_RANDOM_SECRET"];
-    const originalApiKey = process.env["CURSOR_API_KEY"];
-    const originalHome = process.env["HOME"];
-    process.env["CURSOR_RANDOM_SECRET"] = "nope";
-    process.env["CURSOR_API_KEY"] = "ok";
-    try {
-      const env = cursorEnv({
-        home: "/tmp/clawpatch-cursor/home",
-        xdgConfig: "/tmp/clawpatch-cursor/xdg-config",
-        xdgCache: "/tmp/clawpatch-cursor/xdg-cache",
-        xdgData: "/tmp/clawpatch-cursor/xdg-data",
-        temp: "/tmp/clawpatch-cursor/tmp",
-      });
-
-      expect(env["CURSOR_API_KEY"]).toBe("ok");
-      expect(env["CURSOR_AGENT_API_KEY"]).toBeUndefined();
-      expect(env["CURSOR_RANDOM_SECRET"]).toBeUndefined();
-      expect(env["HOME"]).toBe("/tmp/clawpatch-cursor/home");
-      expect(env["HOME"]).not.toBe(originalHome);
-      expect(env["NO_OPEN_BROWSER"]).toBe("1");
-      expect(env["XDG_CONFIG_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-config");
-      expect(env["XDG_CACHE_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-cache");
-      expect(env["XDG_DATA_HOME"]).toBe("/tmp/clawpatch-cursor/xdg-data");
-    } finally {
-      if (originalSecret === undefined) {
-        delete process.env["CURSOR_RANDOM_SECRET"];
-      } else {
-        process.env["CURSOR_RANDOM_SECRET"] = originalSecret;
-      }
-      if (originalApiKey === undefined) {
-        delete process.env["CURSOR_API_KEY"];
-      } else {
-        process.env["CURSOR_API_KEY"] = originalApiKey;
-      }
-    }
+  it("sets Cursor headless browser suppression without replacing the host environment", () => {
+    expect(cursorEnv()).toEqual({
+      NO_OPEN_BROWSER: "1",
+    });
   });
 
   it("parses semver for Cursor advisory checks", () => {

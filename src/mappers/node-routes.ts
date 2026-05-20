@@ -575,7 +575,8 @@ function addFastifyPluginImportNames(names: Set<string>, clause: string): void {
   }
 }
 
-function hasFastifyInstanceImport(source: string): boolean {
+function fastifyInstanceTypeNames(source: string): Set<string> {
+  const names = new Set<string>();
   const pattern = /\bimport\b/gu;
   pattern.lastIndex = 0;
   for (const match of source.matchAll(pattern)) {
@@ -587,11 +588,25 @@ function hasFastifyInstanceImport(source: string): boolean {
       continue;
     }
     const clause = readFastifyStaticImportClause(source, importIndex);
-    if (clause !== null && /\bFastifyInstance\b/u.test(clause)) {
-      return true;
+    if (clause !== null) {
+      addFastifyInstanceTypeNames(names, clause);
     }
   }
-  return false;
+  return names;
+}
+
+function addFastifyInstanceTypeNames(names: Set<string>, clause: string): void {
+  const named = /\{([^}]*)\}/u.exec(clause)?.[1];
+  if (named === undefined) {
+    return;
+  }
+  for (const part of named.split(",")) {
+    const binding = part.trim().replace(/^type\s+/u, "");
+    const match = /^FastifyInstance(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/u.exec(binding);
+    if (match !== null) {
+      names.add(match[1] ?? "FastifyInstance");
+    }
+  }
 }
 
 function readFastifyStaticImportClause(source: string, importIndex: number): string | null {
@@ -654,7 +669,7 @@ function readStaticImportClause(
 
 function fastifyScopedCallbackRoutes(source: string, filePath: string): ServerRoute[] {
   const pluginCallTargets = fastifyPluginCallTargetNames(source);
-  const hasInstanceImport = hasFastifyInstanceImport(source);
+  const instanceTypeNames = fastifyInstanceTypeNames(source);
   const routes: ServerRoute[] = [];
   for (const callback of [
     ...functionParameterCallbacks(source),
@@ -663,7 +678,7 @@ function fastifyScopedCallbackRoutes(source: string, filePath: string): ServerRo
     const targets = new Set<string>();
     for (const [index, parameter] of callback.parameters.entries()) {
       if (
-        isFastifyInstanceParameter(parameter.source, hasInstanceImport) ||
+        isFastifyInstanceParameter(parameter.source, instanceTypeNames) ||
         (pluginCallTargets.size > 0 &&
           index === 0 &&
           isInsideFastifyPluginCall(source, callback.index, pluginCallTargets))
@@ -883,11 +898,19 @@ function functionParameters(parameters: string): Array<{ name: string; source: s
     .filter((parameter): parameter is { name: string; source: string } => parameter !== null);
 }
 
-function isFastifyInstanceParameter(parameter: string, hasInstanceImport: boolean): boolean {
-  return (
-    /:\s*import\s*\(\s*["']fastify["']\s*\)\s*\.\s*FastifyInstance\b/u.test(parameter) ||
-    (hasInstanceImport && /:\s*FastifyInstance\b/u.test(parameter))
-  );
+function isFastifyInstanceParameter(
+  parameter: string,
+  instanceTypeNames: ReadonlySet<string>,
+): boolean {
+  if (/:\s*import\s*\(\s*["']fastify["']\s*\)\s*\.\s*FastifyInstance\b/u.test(parameter)) {
+    return true;
+  }
+  for (const name of instanceTypeNames) {
+    if (new RegExp(String.raw`:\s*${escapeRegExp(name)}\b`, "u").test(parameter)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isInsideFastifyPluginCall(
@@ -895,7 +918,10 @@ function isInsideFastifyPluginCall(
   functionIndex: number,
   pluginCallTargets: ReadonlySet<string>,
 ): boolean {
-  const prefix = source.slice(Math.max(0, functionIndex - 120), functionIndex);
+  const prefix = source
+    .slice(Math.max(0, functionIndex - 500), functionIndex)
+    .replace(/\/\*[\s\S]*?\*\//gu, " ")
+    .replace(/\/\/[^\n\r]*/gu, " ");
   const targetPattern = [...pluginCallTargets].map(escapeRegExp).join("|");
   return new RegExp(`\\b(?:${targetPattern})${genericArguments}\\s*\\(\\s*$`, "u").test(prefix);
 }

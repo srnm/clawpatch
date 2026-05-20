@@ -166,13 +166,17 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "package.json",
-      JSON.stringify({ name: "workspace-root", workspaces: ["apps/*"] }, null, 2),
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
     );
     await writeFixture(root, "yarn.lock", "");
     await writeFixture(
       root,
       "apps/web/package.json",
-      JSON.stringify({ name: "web", dependencies: { next: "1.0.0" } }, null, 2),
+      JSON.stringify({ name: "web", scripts: { build: "next build" } }, null, 2),
     );
     await writeFixture(
       root,
@@ -206,7 +210,7 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "apps/admin/package.json",
-      JSON.stringify({ name: "admin", dependencies: { next: "1.0.0" } }, null, 2),
+      JSON.stringify({ name: "admin", scripts: { dev: "next dev" } }, null, 2),
     );
     await writeFixture(
       root,
@@ -246,9 +250,73 @@ describe("mapFeatures", () => {
     expect(adminRoute?.tests.every((test) => test.command === "yarn nx test admin")).toBe(true);
   });
 
+  it("maps hoisted Next routes for workspace packages with Next scripts", async () => {
+    const root = await fixtureRoot("clawpatch-map-next-hoisted-package-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "apps/site/package.json",
+      JSON.stringify({ name: "site", scripts: { dev: "next dev" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/site/src/pages/about.tsx",
+      "export default function About() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.find((feature) => feature.title === "site route /about")?.entrypoints[0]
+        ?.path,
+    ).toBe("apps/site/src/pages/about.tsx");
+  });
+
+  it("does not treat package scripts without Next commands as hoisted Next projects", async () => {
+    const root = await fixtureRoot("clawpatch-map-next-hoisted-script-helper-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "apps/site/package.json",
+      JSON.stringify({ name: "site", scripts: { sitemap: "next-sitemap" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/site/src/pages/about.tsx",
+      "export default function About() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("Node source apps/site/src");
+    expect(result.features.some((feature) => feature.title === "site route /about")).toBe(false);
+  });
+
   it("maps Next routes inside Nx projects without package manifests", async () => {
     const root = await fixtureRoot("clawpatch-map-next-nx-no-package-");
-    await writeFixture(root, "package.json", JSON.stringify({ name: "workspace-root" }, null, 2));
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", dependencies: { next: "1.0.0" } }, null, 2),
+    );
     await writeFixture(root, "pnpm-lock.yaml", "");
     await writeFixture(
       root,
@@ -292,12 +360,436 @@ describe("mapFeatures", () => {
     );
   });
 
+  it("does not treat project.json pages folders as hoisted Next projects", async () => {
+    const root = await fixtureRoot("clawpatch-map-next-nx-pages-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", dependencies: { next: "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/admin/project.json",
+      JSON.stringify({ name: "admin", sourceRoot: "apps/admin/src" }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/admin/src/pages/settings.tsx",
+      "export default function Settings() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("Node source apps/admin/src");
+    expect(result.features.some((feature) => feature.title === "admin route /settings")).toBe(
+      false,
+    );
+  });
+
+  it("maps generic package-less app roots and Next routes", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-monorepo-root-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", dependencies: { next: "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/storefront/src/app/checkout/page.tsx",
+      "export default function Checkout() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "apps/storefront/src/app/checkout/page.test.tsx",
+      "test('checkout', () => {});\n",
+    );
+    await writeFixture(root, "apps/worker/src/index.ts", "export const worker = true;\n");
+    await writeFixture(root, "apps/worker/src/index.test.ts", "test('worker', () => {});\n");
+    await writeFixture(root, "apps/api/server/index.ts", "export const api = true;\n");
+    await writeFixture(root, "apps/api/server/index.test.ts", "test('api', () => {});\n");
+    await writeFixture(
+      root,
+      "apps/admin/src/pages/About.tsx",
+      "export default function About() { return null; }\n",
+    );
+    await writeFixture(
+      root,
+      "apps/pagesapp/src/pages/about.tsx",
+      "export default function About() { return null; }\n",
+    );
+    await writeFixture(root, "apps/pagesapp/next.config.js", "module.exports = {};\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const route = result.features.find((feature) => feature.title === "storefront route /checkout");
+    const worker = result.features.find(
+      (feature) => feature.title === "Node source apps/worker/src",
+    );
+    const api = result.features.find((feature) => feature.title === "Node source apps/api/server");
+
+    expect(route?.entrypoints[0]?.path).toBe("apps/storefront/src/app/checkout/page.tsx");
+    expect(route?.tags).toEqual(
+      expect.arrayContaining(["project:storefront", "project-root:apps/storefront"]),
+    );
+    expect(route?.tests).toContainEqual({
+      path: "apps/storefront/src/app/checkout/page.test.tsx",
+      command: null,
+    });
+    expect(worker?.ownedFiles).toContainEqual({
+      path: "apps/worker/src/index.ts",
+      reason: "source group apps/worker/src",
+    });
+    expect(worker?.tags).toEqual(
+      expect.arrayContaining(["generic-project", "project:worker", "project-root:apps/worker"]),
+    );
+    expect(worker?.tests).toContainEqual({
+      path: "apps/worker/src/index.test.ts",
+      command: null,
+    });
+    expect(api?.ownedFiles).toContainEqual({
+      path: "apps/api/server/index.ts",
+      reason: "source group apps/api/server",
+    });
+    expect(api?.tests).toContainEqual({
+      path: "apps/api/server/index.test.ts",
+      command: null,
+    });
+    expect(result.features.some((feature) => feature.title === "admin route /About")).toBe(false);
+    expect(
+      result.features.find((feature) => feature.title === "pagesapp route /about")?.entrypoints[0]
+        ?.path,
+    ).toBe("apps/pagesapp/src/pages/about.tsx");
+  });
+
+  it("does not duplicate generic roots under package workspaces", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-nested-package-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/**"] }, null, 2),
+    );
+    await writeFixture(root, "apps/web/package.json", JSON.stringify({ name: "web" }, null, 2));
+    await writeFixture(root, "apps/web/src/lib/foo.ts", "export const foo = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("Node source apps/web/src");
+    expect(
+      result.features.some((feature) => feature.tags.includes("project-root:apps/web/src")),
+    ).toBe(false);
+  });
+
+  it("keeps recursive package-less project discovery to the shallowest root", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-recursive-root-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/**"] }, null, 2),
+    );
+    await writeFixture(root, "apps/web/src/app/page.tsx", "export default function Page() {}\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("Node source apps/web/src");
+    expect(
+      result.features.some((feature) => feature.tags.includes("project-root:apps/web/src")),
+    ).toBe(false);
+  });
+
+  it("does not treat recursive workspace containers as package-less projects", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-recursive-container-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/**"] }, null, 2),
+    );
+    await writeFixture(root, "apps/api/server/index.ts", "export const api = true;\n");
+    await writeFixture(root, "apps/web/src/index.ts", "export const web = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+
+    expect(titles).toContain("Node source apps/api/server");
+    expect(titles).toContain("Node source apps/web/src");
+    expect(result.features.some((feature) => feature.tags.includes("project-root:apps"))).toBe(
+      false,
+    );
+  });
+
+  it("maps package-less projects under bare recursive workspace globs", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-bare-recursive-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["**"] }, null, 2),
+    );
+    await writeFixture(root, "services/api/src/index.ts", "export const api = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const source = result.features.find(
+      (feature) => feature.title === "Node source services/api/src",
+    );
+
+    expect(source?.ownedFiles).toContainEqual({
+      path: "services/api/src/index.ts",
+      reason: "source group services/api/src",
+    });
+    expect(source?.tags).toEqual(
+      expect.arrayContaining(["project:api", "project-root:services/api"]),
+    );
+    expect(result.features.some((feature) => feature.tags.includes("project-root:services"))).toBe(
+      false,
+    );
+  });
+
+  it("maps API-only package-less Next apps", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-next-api-only-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "apps/app-api/app/api/hello/route.ts",
+      "export function GET() { return new Response('ok'); }\n",
+    );
+    await writeFixture(
+      root,
+      "apps/pages-api/pages/api/hello.ts",
+      "export default function handler() {}\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(
+      result.features.find((feature) => feature.title === "app-api route /api/hello")
+        ?.entrypoints[0]?.path,
+    ).toBe("apps/app-api/app/api/hello/route.ts");
+    expect(
+      result.features.find((feature) => feature.title === "pages-api route /api/hello")
+        ?.entrypoints[0]?.path,
+    ).toBe("apps/pages-api/pages/api/hello.ts");
+  });
+
+  it("maps package-less apps with nested server API sources", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-server-api-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/*"] }, null, 2),
+    );
+    await writeFixture(root, "apps/foo/server/api/index.ts", "export const api = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const source = result.features.find(
+      (feature) => feature.title === "Node source apps/foo/server",
+    );
+
+    expect(source?.ownedFiles).toContainEqual({
+      path: "apps/foo/server/api/index.ts",
+      reason: "source group apps/foo/server",
+    });
+    expect(source?.tags).toEqual(expect.arrayContaining(["project:foo", "project-root:apps/foo"]));
+  });
+
+  it("does not let docs-only src folders suppress nested package-less projects", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-docs-only-src-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/**"] }, null, 2),
+    );
+    await writeFixture(root, "apps/foo/src/README.md", "# notes\n");
+    await writeFixture(root, "apps/foo/src/tsconfig.json", "{}\n");
+    await writeFixture(root, "apps/foo/bar/src/index.ts", "export const bar = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const source = result.features.find(
+      (feature) => feature.title === "Node source apps/foo/bar/src",
+    );
+
+    expect(source?.ownedFiles).toContainEqual({
+      path: "apps/foo/bar/src/index.ts",
+      reason: "source group apps/foo/bar/src",
+    });
+    expect(source?.tags).toEqual(
+      expect.arrayContaining(["project:bar", "project-root:apps/foo/bar"]),
+    );
+    expect(result.features.some((feature) => feature.tags.includes("project-root:apps/foo"))).toBe(
+      false,
+    );
+  });
+
+  it("does not let non-reviewable src files suppress nested package-less projects", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-non-reviewable-src-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/**"] }, null, 2),
+    );
+    await writeFixture(root, "apps/foo/src/types.d.ts", "export type Config = {};\n");
+    await writeFixture(root, "apps/foo/src/index.test.ts", "test('container', () => {});\n");
+    await writeFixture(
+      root,
+      "apps/foo/src/generated/client.ts",
+      "export const generated = true;\n",
+    );
+    await writeFixture(root, "apps/foo/src/fixtures/example.ts", "export const fixture = true;\n");
+    await writeFixture(root, "apps/foo/bar/src/index.ts", "export const bar = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const source = result.features.find(
+      (feature) => feature.title === "Node source apps/foo/bar/src",
+    );
+
+    expect(source?.ownedFiles).toContainEqual({
+      path: "apps/foo/bar/src/index.ts",
+      reason: "source group apps/foo/bar/src",
+    });
+    expect(source?.tags).toEqual(
+      expect.arrayContaining(["project:bar", "project-root:apps/foo/bar"]),
+    );
+    expect(result.features.some((feature) => feature.tags.includes("project-root:apps/foo"))).toBe(
+      false,
+    );
+  });
+
+  it("does not treat package-less React pages as Next routes without a Next signal", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-react-pages-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", dependencies: { react: "1.0.0" } }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/web/src/pages/About.tsx",
+      "export default function About() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+
+    expect(result.features.map((feature) => feature.title)).toContain("Node source apps/web/src");
+    expect(result.features.some((feature) => feature.source === "next-pages-route")).toBe(false);
+  });
+
+  it("normalizes leading dot workspace globs for package-less Next apps", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-dot-workspace-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["./services/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "services/web/src/app/about/page.tsx",
+      "export default function About() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const route = result.features.find((feature) => feature.title === "web route /about");
+    const source = result.features.find(
+      (feature) => feature.title === "Node source services/web/src",
+    );
+
+    expect(route?.entrypoints[0]?.path).toBe("services/web/src/app/about/page.tsx");
+    expect(route?.tags).toEqual(
+      expect.arrayContaining(["project:web", "project-root:services/web"]),
+    );
+    expect(source?.tags).toEqual(
+      expect.arrayContaining(["project:web", "project-root:services/web"]),
+    );
+    expect(
+      result.features.some((feature) => feature.tags.includes("project-root:./services/web")),
+    ).toBe(false);
+  });
+
+  it("maps deep package-less Next route trees", async () => {
+    const root = await fixtureRoot("clawpatch-map-generic-deep-next-route-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "apps/web/src/app/(shop)/products/[slug]/reviews/page.tsx",
+      "export default function Reviews() { return null; }\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const route = result.features.find(
+      (feature) => feature.title === "web route /products/:slug/reviews",
+    );
+
+    expect(route?.entrypoints[0]?.path).toBe(
+      "apps/web/src/app/(shop)/products/[slug]/reviews/page.tsx",
+    );
+    expect(route?.tags).toEqual(expect.arrayContaining(["project:web", "project-root:apps/web"]));
+  });
+
+  it("does not duplicate nested Node source roots under project sourceRoot", async () => {
+    const root = await fixtureRoot("clawpatch-map-source-root-overlap-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "workspace-root", workspaces: ["apps/*"] }, null, 2),
+    );
+    await writeFixture(
+      root,
+      "apps/web/project.json",
+      JSON.stringify({ name: "web", sourceRoot: "apps/web", targets: {} }, null, 2),
+    );
+    await writeFixture(root, "apps/web/src/index.ts", "export const web = true;\n");
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const sourceFeatures = result.features.filter((feature) =>
+      feature.title.startsWith("Node source apps/web"),
+    );
+
+    expect(sourceFeatures.map((feature) => feature.title)).toEqual(["Node source apps/web"]);
+    expect(sourceFeatures[0]?.ownedFiles).toContainEqual({
+      path: "apps/web/src/index.ts",
+      reason: "source group apps/web",
+    });
+  });
+
   it("uses package-local commands when no task graph adapter is present", async () => {
     const root = await fixtureRoot("clawpatch-task-graph-fallback-");
     await writeFixture(
       root,
       "package.json",
-      JSON.stringify({ name: "workspace-root", workspaces: ["apps/*"] }, null, 2),
+      JSON.stringify(
+        { name: "workspace-root", workspaces: ["apps/*"], dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
     );
     await writeFixture(root, "pnpm-lock.yaml", "");
     await writeFixture(
@@ -392,7 +884,11 @@ describe("mapFeatures", () => {
     await writeFixture(
       root,
       "apps/web/package.json",
-      JSON.stringify({ name: "web", scripts: { test: "vitest run" } }, null, 2),
+      JSON.stringify(
+        { name: "web", scripts: { test: "vitest run" }, dependencies: { next: "1.0.0" } },
+        null,
+        2,
+      ),
     );
     await writeFixture(root, "apps/web/package-lock.json", "{}\n");
     await writeFixture(
@@ -1918,12 +2414,131 @@ describe("mapFeatures", () => {
       root,
       "src/fastify-plugin.ts",
       [
+        "import fastifyPlugin from 'fastify-plugin';",
+        "import fp from 'fastify-plugin';",
+        "import cjsPlugin = require('fastify-plugin');",
         "import { FastifyInstance } from 'fastify';",
+        "import type { FastifyInstance as FastifyApp } from 'fastify';",
         "",
         "export async function routes(fastify: FastifyInstance) {",
         "  fastify.get('/plugin-users', listPluginUsers);",
         "}",
+        "export async function appRoutes(app: FastifyInstance) {",
+        "  app.get('/plugin-app-users', listPluginAppUsers);",
+        "}",
+        "export async function typedReturnRoutes(app: FastifyInstance): Promise<void> {",
+        "  app.get('/plugin-typed-return-users', listPluginTypedReturnUsers);",
+        "}",
+        "export async function typedObjectReturnRoutes(app: FastifyInstance): Promise<{ ok: true }> {",
+        "  app.get('/plugin-typed-object-return-users', listPluginTypedObjectReturnUsers);",
+        "}",
+        "export async function aliasedTypeRoutes(app: FastifyApp) {",
+        "  app.get('/plugin-aliased-type-users', listPluginAliasedTypeUsers);",
+        "}",
+        "const app = createHttpServer();",
+        "app.get('/not-plugin-app-typed', ignoredApp);",
+        "export const serverRoutes = fastifyPlugin(async function routes(server) {",
+        "  server.get('/plugin-server-users', listPluginServerUsers);",
+        "});",
+        "export const serverReturnRoutes = fastifyPlugin(function routes(server): Promise<void> {",
+        "  server.get('/plugin-server-return-users', listPluginServerReturnUsers);",
+        "});",
+        "export const arrowRoutes = fastifyPlugin(async (app) => {",
+        "  app.get('/plugin-arrow-users', listPluginArrowUsers);",
+        "});",
+        "export const bareArrowRoutes = fastifyPlugin(async bareApp => {",
+        "  bareApp.get('/plugin-bare-arrow-users', listPluginBareArrowUsers);",
+        "});",
+        "export const instanceRoutes = fp(async (instance, options) => {",
+        "  instance.get('/plugin-instance-users', listPluginInstanceUsers);",
+        "  options.get('/not-plugin-options', ignoredOptions);",
+        "});",
+        "export const commentRoutes = fp(async (instance) => {",
+        "  // }",
+        "  instance.get('/plugin-comment-users', listPluginCommentUsers);",
+        "});",
+        "export const commentedArgumentRoutes = fp( /* routes */ async (commentedApp) => {",
+        "  commentedApp.get('/plugin-commented-argument-users', listPluginCommentedArgumentUsers);",
+        "});",
+        "export const aliasedRoutes = fp(async (app) => {",
+        "  app.get('/plugin-aliased-users', listPluginAliasedUsers);",
+        "});",
+        "type PluginOptions = { prefix: string };",
+        "export const genericRoutes = fastifyPlugin<PluginOptions>(async (server) => {",
+        "  server.get('/plugin-generic-users', listPluginGenericUsers);",
+        "});",
+        "export const importEqualsRoutes = cjsPlugin(async (server) => {",
+        "  server.get('/plugin-import-equals-users', listPluginImportEqualsUsers);",
+        "});",
+        "const defaultPlugin = require('fastify-plugin').default;",
+        "export const defaultRequireRoutes = defaultPlugin(async (app) => {",
+        "  app.get('/plugin-default-require-users', listPluginDefaultRequireUsers);",
+        "});",
+        "export const typedArrowRoutes = async (server: FastifyInstance): Promise<void> => {",
+        "  server.get('/plugin-typed-arrow-users', listPluginTypedArrowUsers);",
+        "};",
+        "const server = createHttpServer();",
+        "server.get('/not-plugin-server', ignoredServer);",
+        'export async function inlineRoutes(inlineApp: import("fastify").FastifyInstance) {',
+        '  inlineApp.get("/plugin-inline-users", listPluginInlineUsers);',
+        "}",
+        'export const inlineArrowRoutes = async (inlineServer: import("fastify").FastifyInstance): Promise<void> => {',
+        '  inlineServer.get("/plugin-inline-arrow-users", listPluginInlineArrowUsers);',
+        "};",
         "function listPluginUsers() {}",
+        "function listPluginAppUsers() {}",
+        "function listPluginTypedReturnUsers() {}",
+        "function listPluginTypedObjectReturnUsers() {}",
+        "function listPluginAliasedTypeUsers() {}",
+        "function listPluginServerUsers() {}",
+        "function listPluginServerReturnUsers() {}",
+        "function listPluginArrowUsers() {}",
+        "function listPluginBareArrowUsers() {}",
+        "function listPluginInstanceUsers() {}",
+        "function listPluginCommentUsers() {}",
+        "function listPluginCommentedArgumentUsers() {}",
+        "function listPluginAliasedUsers() {}",
+        "function listPluginGenericUsers() {}",
+        "function listPluginImportEqualsUsers() {}",
+        "function listPluginDefaultRequireUsers() {}",
+        "function listPluginTypedArrowUsers() {}",
+        "function listPluginInlineUsers() {}",
+        "function listPluginInlineArrowUsers() {}",
+        "function createHttpServer() { return { get() {} }; }",
+        "function ignoredApp() {}",
+        "function ignoredServer() {}",
+        "function ignoredOptions() {}",
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "src/fastify-multiline-import.ts",
+      [
+        "import {",
+        "  FastifyInstance,",
+        "} from 'fastify';",
+        "",
+        "export async function multilineRoutes(app: FastifyInstance) {",
+        "  app.get('/plugin-multiline-users', listPluginMultilineUsers);",
+        "}",
+        "function listPluginMultilineUsers() {}",
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "src/not-fastify-plugin.ts",
+      [
+        'import { FastifyInstance } from "./types"',
+        'import Fastify from "fastify"',
+        "export async function genericAppRoutes(app) {",
+        '  app.get("/not-plugin-app", ignored);',
+        "}",
+        "export async function shadowInstanceRoutes(instance: FastifyInstance) {",
+        '  instance.get("/shadow-fastify-instance", ignored);',
+        "}",
+        "function ignored() {}",
         "",
       ].join("\n"),
     );
@@ -2095,6 +2710,25 @@ describe("mapFeatures", () => {
         "Fastify route GET /route-status",
         "Fastify route POST /webhook/github",
         "Fastify route GET /plugin-users",
+        "Fastify route GET /plugin-app-users",
+        "Fastify route GET /plugin-typed-return-users",
+        "Fastify route GET /plugin-typed-object-return-users",
+        "Fastify route GET /plugin-aliased-type-users",
+        "Fastify route GET /plugin-server-users",
+        "Fastify route GET /plugin-server-return-users",
+        "Fastify route GET /plugin-arrow-users",
+        "Fastify route GET /plugin-bare-arrow-users",
+        "Fastify route GET /plugin-instance-users",
+        "Fastify route GET /plugin-comment-users",
+        "Fastify route GET /plugin-commented-argument-users",
+        "Fastify route GET /plugin-aliased-users",
+        "Fastify route GET /plugin-generic-users",
+        "Fastify route GET /plugin-import-equals-users",
+        "Fastify route GET /plugin-default-require-users",
+        "Fastify route GET /plugin-typed-arrow-users",
+        "Fastify route GET /plugin-inline-users",
+        "Fastify route GET /plugin-inline-arrow-users",
+        "Fastify route GET /plugin-multiline-users",
         "Hono route GET /api/items",
         "Hono route DELETE /sessions/:id",
       ]),
@@ -2117,6 +2751,11 @@ describe("mapFeatures", () => {
     expect(titles).not.toContain("Express route GET /assigned-not-router");
     expect(titles).not.toContain("Express route GET /dynamic/");
     expect(titles).not.toContain("Fastify route GET /dynamic/");
+    expect(titles).not.toContain("Fastify route GET /not-plugin-app");
+    expect(titles).not.toContain("Fastify route GET /not-plugin-app-typed");
+    expect(titles).not.toContain("Fastify route GET /not-plugin-server");
+    expect(titles).not.toContain("Fastify route GET /not-plugin-options");
+    expect(titles).not.toContain("Fastify route GET /shadow-fastify-instance");
     expect(titles).not.toContain("Fastify route GET /concat-");
     expect(titles).not.toContain("Express route DELETE /reports");
     expect(admin?.source).toBe("express-route");
@@ -2132,6 +2771,85 @@ describe("mapFeatures", () => {
     expect(anonymousHandler?.entrypoints[0]?.symbol).toBeNull();
     expect(fastifyRouteObject?.entrypoints[0]?.symbol).toBe("routeStatus");
     expect(session?.trustBoundaries).toContain("auth");
+  });
+
+  it("maps Fastify route-object static method arrays conservatively", async () => {
+    const root = await fixtureRoot("clawpatch-fastify-method-array-routes-");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify(
+        {
+          name: "fastify-array-routes",
+          dependencies: { fastify: "1.0.0" },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "src/fastify.ts",
+      [
+        "import Fastify from 'fastify';",
+        "",
+        "const fastify = Fastify();",
+        "fastify.route({ method: ['GET', 'POST'], url: '/items', handler: items });",
+        "fastify.route({ method: ['DELETE', configuredMethod], url: '/mixed', handler: mixed });",
+        "fastify.route({ method: ['GET', configuredMethods[0]], url: '/indexed-mixed', handler: indexedMixed });",
+        "fastify.route({ method: ['PUT', 'PATCH'] as const, url: '/const-items', handler: constItems });",
+        "fastify.route({ method: ['OPTIONS'] satisfies readonly string[], url: '/satisfies-items', handler: satisfiesItems });",
+        "fastify.route({ method: [configuredMethod], url: '/dynamic-only', handler: dynamicOnly });",
+        "fastify.route({ method: [200], url: '/numeric-only', handler: numericOnly });",
+        "fastify.route({ method: [`PATCH`], url: '/template-static', handler: templateStatic });",
+        "fastify.route({ method: ['GET', `POST-${suffix}`], url: '/template-mixed', handler: templateMixed });",
+        "fastify.route({ method: [`PUT-${suffix}`, 'HEAD'], url: '/template-mixed-tail', handler: templateMixedTail });",
+        "fastify.route({ method: [`PATCH-${suffix}`], url: '/template-dynamic', handler: templateDynamic });",
+        "function items() {}",
+        "function mixed() {}",
+        "function indexedMixed() {}",
+        "function constItems() {}",
+        "function satisfiesItems() {}",
+        "function dynamicOnly() {}",
+        "function numericOnly() {}",
+        "function templateStatic() {}",
+        "function templateMixed() {}",
+        "function templateMixedTail() {}",
+        "function templateDynamic() {}",
+        "",
+      ].join("\n"),
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+    const routes = result.features
+      .map((feature) => feature.entrypoints[0]?.route)
+      .filter((route): route is string => route !== undefined && route !== null);
+
+    expect(titles).toEqual(
+      expect.arrayContaining([
+        "Fastify route GET /items",
+        "Fastify route POST /items",
+        "Fastify route DELETE /mixed",
+        "Fastify route GET /indexed-mixed",
+        "Fastify route PUT /const-items",
+        "Fastify route PATCH /const-items",
+        "Fastify route OPTIONS /satisfies-items",
+        "Fastify route PATCH /template-static",
+        "Fastify route GET /template-mixed",
+        "Fastify route HEAD /template-mixed-tail",
+      ]),
+    );
+    expect(routes.some((route) => route.endsWith(" /dynamic-only"))).toBe(false);
+    expect(routes.some((route) => route.endsWith(" /numeric-only"))).toBe(false);
+    expect(routes.filter((route) => route.endsWith(" /template-mixed"))).toEqual([
+      "GET /template-mixed",
+    ]);
+    expect(routes.filter((route) => route.endsWith(" /template-mixed-tail"))).toEqual([
+      "HEAD /template-mixed-tail",
+    ]);
+    expect(routes.some((route) => route.endsWith(" /template-dynamic"))).toBe(false);
   });
 
   it("keeps index route tests scoped to their route directory", async () => {
@@ -11279,6 +11997,140 @@ add_executable(headerapp include/headers.hpp)
     expect(dashboard?.entrypoints[0]?.route).toBe("/{tenant}/dashboard");
   });
 
+  it("maps Laravel array-style route group prefixes", async () => {
+    const root = await fixtureRoot("clawpatch-laravel-array-group-prefix-");
+    await writeFixture(
+      root,
+      "composer.json",
+      JSON.stringify(
+        {
+          name: "acme/array-group-prefix",
+          require: {
+            php: "^8.3",
+            "laravel/framework": "^13.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "routes/web.php",
+      "<?php\n" +
+        "use App\\Http\\Controllers\\UserController;\n" +
+        'Route::group(["prefix" => "admin"], function () {\n' +
+        '    Route::get("/users", UserController::class);\n' +
+        "});\n",
+    );
+    await writeFixture(
+      root,
+      "app/Http/Controllers/UserController.php",
+      "<?php\nnamespace App\\Http\\Controllers;\nfinal class UserController {}\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const userController = result.features.find(
+      (feature) => feature.entrypoints[0]?.path === "app/Http/Controllers/UserController.php",
+    );
+
+    expect(userController?.entrypoints[0]?.route).toBe("/admin/users");
+    expect(userController?.summary).toContain("GET /admin/users");
+    expect(userController?.contextFiles).toContainEqual({
+      path: "routes/web.php",
+      reason: "route definition",
+    });
+  });
+
+  it("maps nested Laravel route groups inside array-style prefixes", async () => {
+    const root = await fixtureRoot("clawpatch-laravel-nested-array-group-prefix-");
+    await writeFixture(
+      root,
+      "composer.json",
+      JSON.stringify(
+        {
+          name: "acme/nested-array-group-prefix",
+          require: {
+            php: "^8.3",
+            "laravel/framework": "^13.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "routes/web.php",
+      "<?php\n" +
+        "use App\\Http\\Controllers\\UserController;\n" +
+        "Route::group(['prefix' => 'admin'], function () {\n" +
+        "    Route::controller(UserController::class)->group(function () {\n" +
+        "        Route::get('/users', 'index');\n" +
+        "    });\n" +
+        "});\n",
+    );
+    await writeFixture(
+      root,
+      "app/Http/Controllers/UserController.php",
+      "<?php\nnamespace App\\Http\\Controllers;\nfinal class UserController {}\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const userController = result.features.find(
+      (feature) => feature.entrypoints[0]?.path === "app/Http/Controllers/UserController.php",
+    );
+
+    expect(userController?.entrypoints[0]?.route).toBe("/admin/users");
+    expect(userController?.summary).toContain("GET /admin/users#index");
+  });
+
+  it("maps Laravel prefixes nested inside non-prefix array groups", async () => {
+    const root = await fixtureRoot("clawpatch-laravel-non-prefix-array-group-");
+    await writeFixture(
+      root,
+      "composer.json",
+      JSON.stringify(
+        {
+          name: "acme/non-prefix-array-group",
+          require: {
+            php: "^8.3",
+            "laravel/framework": "^13.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "routes/web.php",
+      "<?php\n" +
+        "use App\\Http\\Controllers\\UserController;\n" +
+        "Route::group(['middleware' => 'auth'], function () {\n" +
+        "    Route::group(['prefix' => 'admin'], function () {\n" +
+        "        Route::get('/users', UserController::class);\n" +
+        "    });\n" +
+        "});\n",
+    );
+    await writeFixture(
+      root,
+      "app/Http/Controllers/UserController.php",
+      "<?php\nnamespace App\\Http\\Controllers;\nfinal class UserController {}\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const userController = result.features.find(
+      (feature) => feature.entrypoints[0]?.path === "app/Http/Controllers/UserController.php",
+    );
+
+    expect(userController?.entrypoints[0]?.route).toBe("/admin/users");
+    expect(userController?.summary).toContain("GET /admin/users");
+  });
+
   it("maps Laravel controller route groups", async () => {
     const root = await fixtureRoot("clawpatch-laravel-controller-groups-");
     await writeFixture(
@@ -12314,13 +13166,38 @@ add_executable(headerapp include/headers.hpp)
       [
         "from fastapi import APIRouter",
         "",
-        "router = APIRouter()",
+        "router: APIRouter = APIRouter(prefix='/api/v1')",
         "",
         "@router.post(",
         "    path='/admin/jobs',",
         ")",
         "def create_job():",
         "    return {'queued': True}",
+        "",
+        "@router.get('/admin/jobs/')",
+        "def list_jobs():",
+        "    return {'jobs': []}",
+        "",
+        "@router.get('')",
+        "def admin_root():",
+        "    return {'root': True}",
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "web/v2.py",
+      [
+        "import fastapi",
+        "",
+        "api_router = fastapi.APIRouter (",
+        '    prefix="/v2",',
+        "    tags=['v2'],",
+        ")",
+        "",
+        "@api_router.get('/')",
+        "def v2_index():",
+        "    return {'ok': True}",
         "",
       ].join("\n"),
     );
@@ -12336,8 +13213,15 @@ add_executable(headerapp include/headers.hpp)
       (feature) => feature.title === "FastAPI route POST /submit",
     );
     const admin = result.features.find(
-      (feature) => feature.title === "FastAPI route POST /admin/jobs",
+      (feature) => feature.title === "FastAPI route POST /api/v1/admin/jobs",
     );
+    const jobs = result.features.find(
+      (feature) => feature.title === "FastAPI route GET /api/v1/admin/jobs/",
+    );
+    const adminRoot = result.features.find(
+      (feature) => feature.title === "FastAPI route GET /api/v1",
+    );
+    const v2 = result.features.find((feature) => feature.title === "FastAPI route GET /v2/");
 
     expect(project.detected.frameworks).toContain("fastapi");
     expect(health?.source).toBe("python-fastapi-route");
@@ -12352,9 +13236,16 @@ add_executable(headerapp include/headers.hpp)
     expect(admin?.entrypoints[0]).toMatchObject({
       path: "web/api.py",
       symbol: "create_job",
-      route: "POST /admin/jobs",
+      route: "POST /api/v1/admin/jobs",
     });
     expect(admin?.trustBoundaries).toContain("auth");
+    expect(jobs?.entrypoints[0]?.route).toBe("GET /api/v1/admin/jobs/");
+    expect(adminRoot?.entrypoints[0]?.route).toBe("GET /api/v1");
+    expect(v2?.entrypoints[0]).toMatchObject({
+      path: "web/v2.py",
+      symbol: "v2_index",
+      route: "GET /v2/",
+    });
   });
 
   it("detects metadata-free root and web Python sources", async () => {

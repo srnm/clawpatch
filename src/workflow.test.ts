@@ -32,7 +32,7 @@ import {
 import { main as cliMain, packageVersion, parseArgs } from "./cli.js";
 import { defaultConfig, loadConfig } from "./config.js";
 import { runCommand } from "./exec.js";
-import { changedFilesSince } from "./git.js";
+import { changedFilesSince, dirtyFiles } from "./git.js";
 import { mapWithSource } from "./agent-mapper.js";
 import { mapFeatures } from "./mapper.js";
 import {
@@ -312,6 +312,9 @@ describe("workflow", () => {
     expect(parseArgs(["review", "--since", "HEAD~5"]).flags).toMatchObject({
       since: "HEAD~5",
     });
+    expect(parseArgs(["review", "--include-dirty"]).flags).toMatchObject({
+      includeDirty: true,
+    });
     expect(parseArgs(["review", "--mode", "deslopify"]).flags).toMatchObject({
       mode: "deslopify",
     });
@@ -339,8 +342,14 @@ describe("workflow", () => {
       jobs: "1",
       output: "report.md",
     });
+    expect(parseArgs(["ci", "--include-dirty"]).flags).toMatchObject({
+      includeDirty: true,
+    });
     expect(parseArgs(["revalidate", "--since", "origin/main"]).flags).toMatchObject({
       since: "origin/main",
+    });
+    expect(parseArgs(["revalidate", "--include-dirty"]).flags).toMatchObject({
+      includeDirty: true,
     });
     expect(
       parseArgs(["report", "--status", "open", "--severity", "high", "--project", "web"]).flags,
@@ -456,6 +465,7 @@ describe("workflow", () => {
     });
     expect(jsonReport).toMatchObject({
       findings: 1,
+      total: 1,
       items: [
         {
           id: expect.stringMatching(/^fnd_/u),
@@ -469,6 +479,15 @@ describe("workflow", () => {
       ],
     });
     expect(reviewedFeature?.analysisHistory.at(-1)?.summary).toContain("prompt=");
+    const aliased = jsonReport as {
+      findings: number;
+      total: number;
+      items: unknown[];
+      results: unknown[];
+    };
+    expect(aliased.total).toBe(aliased.findings);
+    expect(aliased.total).toBe(aliased.items.length);
+    expect(aliased.results).toBe(aliased.items);
     delete process.env["CLAWPATCH_PROVIDER"];
   });
 
@@ -811,6 +830,77 @@ describe("workflow", () => {
     expect((reviewed as { featureIds: string[] }).featureIds.length).toBeGreaterThan(1);
   });
 
+  it("selects review features whose files are dirty", async () => {
+    const root = await sinceFixture("clawpatch-dirty-review-");
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    await mapCommand(context);
+    await writeFixture(root, "src/two.ts", "export const two = 'dirty';\n");
+    const paths = statePaths(join(root, ".clawpatch"));
+    const features = await readFeatures(paths);
+    const reviewed = await reviewCommand(context, {
+      includeDirty: true,
+      limit: "20",
+      dryRun: true,
+    });
+
+    expect(await dirtyFiles(root)).toContain("src/two.ts");
+    expect(reviewed).toMatchObject({
+      dryRun: true,
+      featureIds: expectedFeatureIds(features, new Set(["src/two.ts"]), true),
+    });
+  });
+
+  it("unions --since and --include-dirty review files", async () => {
+    const root = await sinceFixture("clawpatch-since-dirty-union-");
+    const context = await makeContext(testOptions(root));
+
+    await initCommand(context, {});
+    await mapCommand(context);
+    await writeFixture(root, "src/two.ts", "export const two = 'changed';\n");
+    await commitAll(root, "change two");
+    await writeFixture(root, "src/three.ts", "export const three = 'dirty';\n");
+    const paths = statePaths(join(root, ".clawpatch"));
+    const features = await readFeatures(paths);
+    const expected = expectedFeatureIds(features, new Set(["src/two.ts", "src/three.ts"]), true);
+    const reviewed = await reviewCommand(context, {
+      since: "base",
+      includeDirty: true,
+      dryRun: true,
+    });
+
+    expect(reviewed).toMatchObject({ dryRun: true, featureIds: expected });
+    expect((reviewed as { featureIds: string[] }).featureIds.length).toBeGreaterThan(1);
+  });
+
+  it("runs review --include-dirty through the CLI entrypoint", async () => {
+    const root = await sinceFixture("clawpatch-dirty-cli-");
+    await runCli(["--root", root, "--json", "--quiet", "init"]);
+    await runCli(["--root", root, "--json", "--quiet", "map"]);
+    await writeFixture(root, "src/two.ts", "export const two = 'dirty';\n");
+    const paths = statePaths(join(root, ".clawpatch"));
+    const features = await readFeatures(paths);
+
+    const reviewed = await runCli([
+      "--root",
+      root,
+      "--json",
+      "--quiet",
+      "review",
+      "--include-dirty",
+      "--limit",
+      "20",
+      "--dry-run",
+    ]);
+
+    expect(JSON.parse(reviewed.stdout)).toMatchObject({
+      dryRun: true,
+      featureIds: expectedFeatureIds(features, new Set(["src/two.ts"]), true),
+    });
+    expect(reviewed.stderr).toBe("");
+  });
+
   it("keeps explicit invalid review --since limits capped to one feature", async () => {
     const root = await sinceFixture("clawpatch-since-invalid-limit-");
     const context = await makeContext(testOptions(root));
@@ -941,6 +1031,43 @@ describe("workflow", () => {
     expect(reviewed.featureIds).toContain(targetFeature!.featureId);
   });
 
+  it("matches dirty paths relative to an explicit subdirectory root", async () => {
+    const repoRoot = await fixtureRoot("clawpatch-dirty-subdir-repo-");
+    const root = join(repoRoot, "packages", "app");
+    await writeFixture(
+      root,
+      "package.json",
+      JSON.stringify({ name: "subdir", bin: { app: "src/app.ts" } }),
+    );
+    await writeFixture(root, "src/app.ts", "export const value = 'base';\n");
+    await writeFixture(repoRoot, "packages/other/src/other.ts", "export const other = 'base';\n");
+    await initGit(repoRoot);
+    await checkCommand(repoRoot, "git add packages");
+    await checkCommand(repoRoot, 'git -c commit.gpgsign=false commit -q -m "base"');
+    const context = await makeContext(testOptions(root));
+    await initCommand(context, {});
+    await mapCommand(context);
+    await writeFixture(root, "src/app.ts", "export const value = 'dirty';\n");
+    await writeFixture(repoRoot, "packages/other/src/other.ts", "export const other = 'dirty';\n");
+    const features = await readFeatures(statePaths(join(root, ".clawpatch")));
+    const targetFeature = features.find((feature) =>
+      feature.ownedFiles.some((file) => file.path === "src/app.ts"),
+    );
+    const reviewed = (await reviewCommand(context, {
+      includeDirty: true,
+      limit: "20",
+      dryRun: true,
+    })) as { featureIds: string[] };
+
+    const dirty = await dirtyFiles(root);
+    expect(dirty).toContain("src/app.ts");
+    expect(
+      [...dirty].some((path) => path.startsWith("../") || path.includes("packages/other")),
+    ).toBe(false);
+    expect(targetFeature).toBeDefined();
+    expect(reviewed.featureIds).toContain(targetFeature!.featureId);
+  });
+
   it("revalidates only findings whose feature owned files overlap --since", async () => {
     const root = await sinceFixture("clawpatch-since-revalidate-");
     process.env["CLAWPATCH_PROVIDER"] = "mock";
@@ -963,6 +1090,32 @@ describe("workflow", () => {
 
     expect(result).toMatchObject({ revalidated: expected.length });
     delete process.env["CLAWPATCH_PROVIDER"];
+  });
+
+  it("revalidates findings whose feature owned files are dirty", async () => {
+    const root = await sinceFixture("clawpatch-dirty-revalidate-");
+    process.env["CLAWPATCH_PROVIDER"] = "mock";
+    const context = await makeContext(testOptions(root));
+
+    try {
+      await initCommand(context, {});
+      await mapCommand(context);
+      await reviewCommand(context, { limit: "20", jobs: "2" });
+      await writeFixture(root, "src/two.ts", "export const two = 'dirty';\n");
+      const paths = statePaths(join(root, ".clawpatch"));
+      const [features, findings] = await Promise.all([readFeatures(paths), readFindings(paths)]);
+      const touchedFeatureIds = new Set(
+        features
+          .filter((feature) => featureTouches(feature, new Set(["src/two.ts"]), false))
+          .map((feature) => feature.featureId),
+      );
+      const expected = findings.filter((finding) => touchedFeatureIds.has(finding.featureId));
+      const result = await revalidateCommand(context, { includeDirty: true });
+
+      expect(result).toMatchObject({ revalidated: expected.length });
+    } finally {
+      delete process.env["CLAWPATCH_PROVIDER"];
+    }
   });
 
   it("shows, prioritizes, and triages findings with history", async () => {

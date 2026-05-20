@@ -52,6 +52,9 @@ validation commands and records a patch attempt under `.clawpatch/`.
   `lint`, `typecheck`, `format`
 - Node/TypeScript workspace packages under `apps/*`, `packages/*`, and package
   workspace patterns
+- package-less Node/TypeScript app roots under monorepo folders such as
+  `apps/*` and `packages/*` when source or positive framework signals are
+  present
 - generic extension/plugin packages under workspace roots such as `extensions/*`
   and `plugins/*`, including package metadata, source, docs, and nearby tests
 - semantic Node source groups for large packages, including runtime, commands,
@@ -161,6 +164,28 @@ Useful flags:
 - `--force`
 
 Unknown flags fail fast.
+
+### `report --json` shape
+
+`clawpatch report --json` returns:
+
+```json
+{
+  "total": 12,
+  "items": [
+    /* finding summaries */
+  ],
+  "results": [
+    /* alias for items */
+  ],
+  "findings": 12,
+  "output": "/path/or/null"
+}
+```
+
+- `total` and `items` are the canonical keys.
+- `results` is an alias for `items` with the same array for parity with `{count, results}` consumers.
+- `findings: <number>` is kept for backwards compatibility but is **deprecated**. Note that in `--json` output `findings` is a _count_, not the array — use `items` (or `results`) for the array. The next breaking release (v0.4) will drop `findings: <number>` and `results`, landing on `{ total, items, output }`.
 
 ## State
 

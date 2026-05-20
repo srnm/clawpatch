@@ -1124,7 +1124,13 @@ function endOfObject(source: string, start: number): number | null {
       }
       continue;
     }
-    if (char === "'" || char === '"' || char === "`") {
+    if (char === "/" && source[index + 1] === "/") {
+      const newline = source.indexOf("\n", index + 2);
+      index = newline < 0 ? source.length : newline;
+    } else if (char === "/" && source[index + 1] === "*") {
+      const close = source.indexOf("*/", index + 2);
+      index = close < 0 ? source.length : close + 1;
+    } else if (char === "'" || char === '"' || char === "`") {
       quote = char;
     } else if (char === "{") {
       depth += 1;

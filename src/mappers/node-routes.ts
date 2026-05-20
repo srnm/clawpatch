@@ -767,6 +767,13 @@ function functionParameterCallbacks(source: string): Array<{
     const callbackIndex = (match.index ?? 0) + prefixLength;
     addFunctionParameterCallback(callbacks, source, callbackIndex, match[2]?.length ?? 0, match[3]);
   }
+  const bareArrowPattern = /(^|[^A-Za-z0-9_$])((?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=>)/gu;
+  bareArrowPattern.lastIndex = 0;
+  for (const match of source.matchAll(bareArrowPattern)) {
+    const prefixLength = match[1]?.length ?? 0;
+    const callbackIndex = (match.index ?? 0) + prefixLength;
+    addFunctionParameterCallback(callbacks, source, callbackIndex, match[2]?.length ?? 0, match[3]);
+  }
   return callbacks;
 }
 

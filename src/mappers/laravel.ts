@@ -432,10 +432,7 @@ function routeGroupRoutes(
     return routes;
   }
   const groupAttributePrefixes = routeGroupAttributePrefixes(groupCall);
-  if (groupAttributePrefixes.length === 0) {
-    return routes;
-  }
-  const body = closureBody(groupCall.args[1] ?? "");
+  const body = closureBody(groupCall.args[1] ?? groupCall.args[0] ?? "");
   if (body === null) {
     return routes;
   }

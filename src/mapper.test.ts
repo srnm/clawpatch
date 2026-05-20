@@ -11042,6 +11042,50 @@ add_executable(headerapp include/headers.hpp)
     expect(userController?.summary).toContain("GET /admin/users#index");
   });
 
+  it("maps Laravel prefixes nested inside non-prefix array groups", async () => {
+    const root = await fixtureRoot("clawpatch-laravel-non-prefix-array-group-");
+    await writeFixture(
+      root,
+      "composer.json",
+      JSON.stringify(
+        {
+          name: "acme/non-prefix-array-group",
+          require: {
+            php: "^8.3",
+            "laravel/framework": "^13.0",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFixture(
+      root,
+      "routes/web.php",
+      "<?php\n" +
+        "use App\\Http\\Controllers\\UserController;\n" +
+        "Route::group(['middleware' => 'auth'], function () {\n" +
+        "    Route::group(['prefix' => 'admin'], function () {\n" +
+        "        Route::get('/users', UserController::class);\n" +
+        "    });\n" +
+        "});\n",
+    );
+    await writeFixture(
+      root,
+      "app/Http/Controllers/UserController.php",
+      "<?php\nnamespace App\\Http\\Controllers;\nfinal class UserController {}\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const userController = result.features.find(
+      (feature) => feature.entrypoints[0]?.path === "app/Http/Controllers/UserController.php",
+    );
+
+    expect(userController?.entrypoints[0]?.route).toBe("/admin/users");
+    expect(userController?.summary).toContain("GET /admin/users");
+  });
+
   it("maps Laravel controller route groups", async () => {
     const root = await fixtureRoot("clawpatch-laravel-controller-groups-");
     await writeFixture(

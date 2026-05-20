@@ -402,20 +402,34 @@ function fixPromptPaths(
   const owned = feature.ownedFiles.slice(0, config.review.maxOwnedFiles);
   const context = feature.contextFiles.slice(0, config.review.maxContextFiles);
   const tests = feature.tests.slice(0, config.review.maxContextFiles);
-  const allowed = new Set([
-    ...feature.ownedFiles.map((ref) => ref.path),
-    ...feature.contextFiles.map((ref) => ref.path),
-    ...feature.tests.map((test) => test.path),
-    ...feature.entrypoints.map((entrypoint) => entrypoint.path),
-  ]);
+  const allowed = new Map<string, string>();
+  const allowPath = (path: string): void => {
+    const normalizedPath = normalizePromptPath(path);
+    if (!allowed.has(normalizedPath)) {
+      allowed.set(normalizedPath, path);
+    }
+  };
+  for (const ref of feature.ownedFiles) {
+    allowPath(ref.path);
+  }
+  for (const ref of feature.contextFiles) {
+    allowPath(ref.path);
+  }
+  for (const test of feature.tests) {
+    allowPath(test.path);
+  }
+  for (const entrypoint of feature.entrypoints) {
+    allowPath(entrypoint.path);
+  }
   const push = (path: string): void => {
     if (!paths.includes(path)) {
       paths.push(path);
     }
   };
   for (const evidence of finding.evidence) {
-    if (allowed.has(evidence.path)) {
-      push(evidence.path);
+    const allowedPath = allowed.get(normalizePromptPath(evidence.path));
+    if (allowedPath !== undefined) {
+      push(allowedPath);
     }
   }
   for (const ref of owned) {

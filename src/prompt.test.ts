@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { REVIEW_PROMPT_FILE_CHAR_LIMIT, buildReviewPromptBundle } from "./prompt.js";
+import {
+  REVIEW_PROMPT_FILE_CHAR_LIMIT,
+  buildFixPrompt,
+  buildReviewPromptBundle,
+} from "./prompt.js";
 import { defaultConfig } from "./config.js";
 import { fixtureRoot, writeFixture } from "./test-helpers.js";
-import type { FeatureRecord, ProjectRecord } from "./types.js";
+import type { FeatureRecord, FindingRecord, ProjectRecord } from "./types.js";
 
 describe("review prompt provenance", () => {
   it("records included, omitted, and truncated review prompt context", async () => {
@@ -162,6 +166,32 @@ describe("review prompt provenance", () => {
     ]);
     expect(bundle.manifest.omittedFiles).toEqual([]);
   });
+
+  it("includes fix evidence paths that differ only by normalized spelling", async () => {
+    const root = await fixtureRoot("clawpatch-fix-prompt-normalized-evidence-");
+    await writeFixture(root, "src/index.ts", "export const value = 1;\n");
+    await writeFixture(root, "src/other.ts", "export const other = 1;\n");
+    const normalizedFeature = {
+      ...feature(),
+      entrypoints: [],
+      ownedFiles: [{ path: "./src/index.ts", reason: "primary" }],
+      contextFiles: [],
+      tests: [],
+    };
+
+    const prompt = await buildFixPrompt(root, finding("src/index.ts"), normalizedFeature, {
+      ...defaultConfig(),
+      review: {
+        ...defaultConfig().review,
+        maxOwnedFiles: 0,
+        maxContextFiles: 0,
+      },
+    });
+
+    expect(prompt).toContain("--- ./src/index.ts");
+    expect(prompt).toContain("export const value = 1;");
+    expect(prompt).not.toContain("--- src/other.ts");
+  });
 });
 
 function project(root: string): ProjectRecord {
@@ -215,6 +245,42 @@ function feature(): FeatureRecord {
     findingIds: [],
     patchAttemptIds: [],
     analysisHistory: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function finding(path: string): FindingRecord {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    findingId: "fnd_prompt",
+    featureId: "feat_prompt",
+    title: "Prompt finding",
+    category: "bug",
+    severity: "medium",
+    confidence: "high",
+    triage: "confirmed-bug",
+    evidence: [
+      {
+        path,
+        startLine: 1,
+        endLine: 1,
+        symbol: null,
+        quote: null,
+      },
+    ],
+    reasoning: "The file needs a fix.",
+    reproduction: null,
+    recommendation: "Fix the file.",
+    whyTestsDoNotAlreadyCoverThis: "",
+    suggestedRegressionTest: null,
+    minimumFixScope: "src/index.ts",
+    status: "open",
+    history: [],
+    signature: "sig_prompt",
+    linkedPatchAttemptIds: [],
+    createdByRunId: "run_prompt",
     createdAt: now,
     updatedAt: now,
   };

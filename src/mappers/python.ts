@@ -1307,8 +1307,8 @@ function parseFlaskRouteDecorator(
   };
 }
 
-function parseFlaskBlueprintPrefixes(source: string): Map<string, string> {
-  const prefixes = new Map<string, string>();
+function parseFlaskBlueprintPrefixes(source: string): Map<string, string | null> {
+  const prefixes = new Map<string, string | null>();
   for (const [target, prefix] of parseFlaskBlueprintConstructorPrefixes(source)) {
     prefixes.set(target, prefix);
   }
@@ -1348,8 +1348,8 @@ function parseFlaskBlueprintConstructorPrefixes(source: string): Map<string, str
   return prefixes;
 }
 
-function parseFlaskBlueprintRegistrationPrefixes(source: string): Map<string, string> {
-  const prefixes = new Map<string, string>();
+function parseFlaskBlueprintRegistrationPrefixes(source: string): Map<string, string | null> {
+  const prefixes = new Map<string, string | null>();
   const registerCallPattern = /\.register_blueprint\s*\(/gu;
   for (const match of source.matchAll(registerCallPattern)) {
     const callStart = match.index;
@@ -1366,18 +1366,61 @@ function parseFlaskBlueprintRegistrationPrefixes(source: string): Map<string, st
     if (target === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(target)) {
       continue;
     }
-    const prefix = parsePythonKeywordStringArg(args, "url_prefix");
-    if (prefix !== null) {
-      prefixes.set(target, prefix);
+    const prefixValue = parsePythonKeywordArgValue(args, "url_prefix");
+    if (prefixValue !== undefined) {
+      const normalizedPrefixValue = stripPythonInlineComment(prefixValue).trim();
+      if (normalizedPrefixValue === "None") {
+        continue;
+      }
+      prefixes.set(target, pythonStringLiteralValue(normalizedPrefixValue));
     }
   }
   return prefixes;
 }
 
 function parsePythonKeywordStringArg(args: string[], name: string): string | null {
+  const value = parsePythonKeywordArgValue(args, name);
+  return value === undefined
+    ? null
+    : pythonStringLiteralValue(stripPythonInlineComment(value).trim());
+}
+
+function parsePythonKeywordArgValue(args: string[], name: string): string | undefined {
   const pattern = new RegExp(`^\\s*${name}\\s*=\\s*([\\s\\S]*)$`, "u");
-  const value = pattern.exec(args.find((arg) => pattern.test(arg)) ?? "")?.[1];
-  return value === undefined ? null : pythonStringLiteralValue(value);
+  return pattern.exec(args.find((arg) => pattern.test(arg)) ?? "")?.[1];
+}
+
+function stripPythonInlineComment(source: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === undefined) {
+      break;
+    }
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#") {
+      return source.slice(0, index);
+    }
+  }
+  return source;
 }
 
 function parsePythonRouteMethods(args: string): string[] | null {

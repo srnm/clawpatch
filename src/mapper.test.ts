@@ -1651,6 +1651,199 @@ describe("mapFeatures", () => {
     expect(referencedFiles).not.toContain("config/initializers/secret_token.rb");
   });
 
+  it("maps literal Rails route declarations", async () => {
+    const root = await fixtureRoot("clawpatch-map-rails-routes-");
+    await writeFixture(root, "Gemfile", "source 'https://rubygems.org'\ngem 'rails'\n");
+    await writeFixture(root, "config/application.rb", "module FixtureRailsRoutes\nend\n");
+    await writeFixture(
+      root,
+      "config/routes.rb",
+      [
+        "Rails.application.routes.draw do",
+        "  root 'home#index'",
+        "  get '/admin/users', to: 'admin/users#index'",
+        "  post '/sessions', 'sessions#create'",
+        "  put '/profiles/:id', to: 'profiles#update'",
+        "  patch '/accounts/:id', to: 'accounts#update'",
+        "  delete '/sessions/:id', to: 'sessions#destroy'",
+        "  get dynamic_path, to: 'ignored#index'",
+        "  get '/wildcards/*path', to: 'files#show'",
+        "  get '/shorthand'",
+        "  namespace :admin do",
+        "    get '/scoped-users', to: 'users#index'",
+        "    [1].each do |item|",
+        "      item.to_s",
+        "    end",
+        "    get '/leaked', to: 'leaked#index'",
+        "    get '/do-not-enter', to: 'gates#show'",
+        "  end",
+        "  resources :posts do",
+        "    get '/featured', to: 'posts#featured'",
+        "    member do",
+        "      get '/preview', to: 'posts#preview'",
+        "    end",
+        "  end",
+        "  scope path: '/api' do",
+        "    get '/health', to: 'health#show'",
+        "  end",
+        "  get '/public', to: 'public#index'",
+        "  constraints subdomain: 'api' do",
+        "    get '/constraint-health', to: 'health#show'",
+        "  end",
+        "  match '/legacy', to: 'legacy#show', via: :get",
+        "  resources :posts",
+        "end",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      "app/controllers/home_controller.rb",
+      "class HomeController < ApplicationController\nend\n",
+    );
+    await writeFixture(
+      root,
+      "app/controllers/admin/users_controller.rb",
+      "module Admin\n  class UsersController < ApplicationController\n  end\nend\n",
+    );
+    await writeFixture(
+      root,
+      "app/controllers/sessions_controller.rb",
+      "class SessionsController < ApplicationController\nend\n",
+    );
+    await writeFixture(
+      root,
+      "app/controllers/profiles_controller.rb",
+      "class ProfilesController < ApplicationController\nend\n",
+    );
+    await writeFixture(
+      root,
+      "app/controllers/accounts_controller.rb",
+      "class AccountsController < ApplicationController\nend\n",
+    );
+    await writeFixture(
+      root,
+      "test/controllers/sessions_controller_test.rb",
+      "class SessionsControllerTest\nend\n",
+    );
+
+    const project = await detectProject(root);
+    const result = await mapFeatures(root, project, []);
+    const titles = result.features.map((feature) => feature.title);
+    const rootRoute = result.features.find((feature) => feature.title === "Rails route GET /");
+    const adminRoute = result.features.find(
+      (feature) => feature.title === "Rails route GET /admin/users",
+    );
+    const sessionRoute = result.features.find(
+      (feature) => feature.title === "Rails route POST /sessions",
+    );
+    const profileRoute = result.features.find(
+      (feature) => feature.title === "Rails route PUT /profiles/:id",
+    );
+    const accountRoute = result.features.find(
+      (feature) => feature.title === "Rails route PATCH /accounts/:id",
+    );
+    const deleteSessionRoute = result.features.find(
+      (feature) => feature.title === "Rails route DELETE /sessions/:id",
+    );
+
+    expect(project.detected.frameworks).toContain("rails");
+    expect(titles).toEqual(
+      expect.arrayContaining([
+        "Rails route GET /",
+        "Rails route GET /admin/users",
+        "Rails route POST /sessions",
+        "Rails route PUT /profiles/:id",
+        "Rails route PATCH /accounts/:id",
+        "Rails route DELETE /sessions/:id",
+      ]),
+    );
+    expect(titles).not.toContain("Rails route GET /wildcards/*path");
+    expect(titles).not.toContain("Rails route GET /shorthand");
+    expect(titles).not.toContain("Rails route GET /scoped-users");
+    expect(titles).not.toContain("Rails route GET /leaked");
+    expect(titles).not.toContain("Rails route GET /do-not-enter");
+    expect(titles).not.toContain("Rails route GET /featured");
+    expect(titles).not.toContain("Rails route GET /preview");
+    expect(titles).not.toContain("Rails route GET /health");
+    expect(titles).not.toContain("Rails route GET /constraint-health");
+    expect(titles).not.toContain("Rails route GET /legacy");
+    expect(titles).toContain("Rails route GET /public");
+    expect(rootRoute?.source).toBe("rails-route");
+    expect(rootRoute?.entrypoints[0]).toMatchObject({
+      path: "app/controllers/home_controller.rb",
+      symbol: "home#index",
+      route: "GET /",
+    });
+    expect(adminRoute?.entrypoints[0]).toMatchObject({
+      path: "app/controllers/admin/users_controller.rb",
+      symbol: "admin/users#index",
+      route: "GET /admin/users",
+    });
+    expect(adminRoute?.contextFiles).toContainEqual({
+      path: "config/routes.rb",
+      reason: "route definition",
+    });
+    expect(adminRoute?.trustBoundaries).toContain("auth");
+    expect(sessionRoute?.entrypoints[0]?.route).toBe("POST /sessions");
+    expect(sessionRoute?.tests).toEqual([
+      { path: "test/controllers/sessions_controller_test.rb", command: "bundle exec rake test" },
+    ]);
+    expect(sessionRoute?.trustBoundaries).toContain("auth");
+    expect(profileRoute?.entrypoints[0]?.route).toBe("PUT /profiles/:id");
+    expect(accountRoute?.entrypoints[0]?.route).toBe("PATCH /accounts/:id");
+    expect(deleteSessionRoute?.entrypoints[0]?.route).toBe("DELETE /sessions/:id");
+  });
+
+  symlinkIt("keeps Rails route files and handlers inside the repository", async () => {
+    const root = await fixtureRoot("clawpatch-map-rails-route-symlinks-");
+    const external = await fixtureRoot("clawpatch-map-rails-route-external-");
+    await writeFixture(root, "Gemfile", "source 'https://rubygems.org'\ngem 'rails'\n");
+    await writeFixture(root, "config/application.rb", "module FixtureRailsRouteSymlinks\nend\n");
+    await writeFixture(
+      external,
+      "routes.rb",
+      "Rails.application.routes.draw do\n  get '/external', to: 'external#show'\nend\n",
+    );
+    await symlink(join(external, "routes.rb"), join(root, "config/routes.rb"));
+
+    const skippedProject = await detectProject(root);
+    const skipped = await mapFeatures(root, skippedProject, []);
+    expect(skipped.features.map((feature) => feature.title)).not.toContain(
+      "Rails route GET /external",
+    );
+
+    const safeRoot = await fixtureRoot("clawpatch-map-rails-route-handler-symlink-");
+    await writeFixture(safeRoot, "Gemfile", "source 'https://rubygems.org'\ngem 'rails'\n");
+    await writeFixture(
+      safeRoot,
+      "config/application.rb",
+      "module FixtureRailsRouteHandlerSymlink\nend\n",
+    );
+    await writeFixture(
+      safeRoot,
+      "config/routes.rb",
+      "Rails.application.routes.draw do\n  get '/unsafe', to: 'unsafe#show'\nend\n",
+    );
+    await mkdir(join(safeRoot, "app/controllers"), { recursive: true });
+    await writeFixture(external, "unsafe_controller.rb", "class UnsafeController\nend\n");
+    await symlink(
+      join(external, "unsafe_controller.rb"),
+      join(safeRoot, "app/controllers/unsafe_controller.rb"),
+    );
+
+    const project = await detectProject(safeRoot);
+    const result = await mapFeatures(safeRoot, project, []);
+    const route = result.features.find((feature) => feature.title === "Rails route GET /unsafe");
+    expect(route?.entrypoints[0]).toMatchObject({
+      path: "config/routes.rb",
+      symbol: "unsafe#show",
+      route: "GET /unsafe",
+    });
+    expect(route?.ownedFiles).toEqual([
+      { path: "config/routes.rb", reason: "rails route declaration" },
+    ]);
+  });
+
   it("maps workspace packages and splits large Node source groups", async () => {
     const root = await fixtureRoot("clawpatch-node-workspace-map-");
     await writeFixture(

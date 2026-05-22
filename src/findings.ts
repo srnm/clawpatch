@@ -50,7 +50,7 @@ export function findingFromOutput(
     featureId,
     finding.category,
     finding.title,
-    JSON.stringify(finding.evidence),
+    canonicalEvidence(finding.evidence),
   ]);
   const now = nowIso();
   return {
@@ -77,4 +77,68 @@ export function findingFromOutput(
     createdAt: now,
     updatedAt: now,
   };
+}
+
+type CanonicalEvidenceRef = {
+  path: string;
+  startLine: number | null;
+  endLine: number | null;
+  symbol: string | null;
+  quote: string | null;
+};
+
+function canonicalEvidence(finding: ReviewOutput["findings"][number]["evidence"]): string {
+  return JSON.stringify(
+    finding
+      .map(
+        (evidence): CanonicalEvidenceRef => ({
+          path: evidence.path,
+          startLine: evidence.startLine,
+          endLine: evidence.endLine,
+          symbol: evidence.symbol,
+          quote: evidence.quote,
+        }),
+      )
+      .toSorted(compareCanonicalEvidence),
+  );
+}
+
+function compareCanonicalEvidence(left: CanonicalEvidenceRef, right: CanonicalEvidenceRef): number {
+  return (
+    compareStrings(left.path, right.path) ||
+    compareNullableNumbers(left.startLine, right.startLine) ||
+    compareNullableNumbers(left.endLine, right.endLine) ||
+    compareNullableStrings(left.symbol, right.symbol) ||
+    compareNullableStrings(left.quote, right.quote)
+  );
+}
+
+function compareNullableNumbers(left: number | null, right: number | null): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === null) {
+    return -1;
+  }
+  if (right === null) {
+    return 1;
+  }
+  return left - right;
+}
+
+function compareNullableStrings(left: string | null, right: string | null): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === null) {
+    return -1;
+  }
+  if (right === null) {
+    return 1;
+  }
+  return compareStrings(left, right);
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

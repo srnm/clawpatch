@@ -397,34 +397,130 @@ async function djangoRouteSeeds(
     ...(await walk(root, await pythonSourceRoots(root))).filter(isReviewablePythonSourceFile),
   ]);
   const seeds: FeatureSeed[] = [];
+  const routesByFile = new Map<string, DjangoRoute[]>();
   for (const filePath of routeFiles) {
     const source = await readFile(join(root, filePath), "utf8");
     if (!sourceLooksDjangoUrls(filePath, source, hasDjangoDependency)) {
       continue;
     }
-    for (const route of parseDjangoRoutes(filePath, source)) {
-      const tests = associatedTests([route.filePath], testFiles, testCommand);
-      seeds.push({
-        title: `Django route ${route.routePath}`,
-        summary: djangoRouteSummary(route),
-        kind: "route",
-        source: "python-django-route",
-        confidence: "high",
-        entryPath: route.filePath,
-        symbol: route.symbol,
-        route: route.routePath,
-        command: null,
-        ownedFiles: [{ path: route.filePath, reason: "Django URL route declaration" }],
-        contextFiles: tests.map((test) => ({ path: test.path, reason: "associated test" })),
-        tests,
-        tags: ["python", "django", "route"],
-        trustBoundaries: djangoRouteTrustBoundaries(route),
-        testCommand,
-        skipNearbyTests: true,
-      });
+    routesByFile.set(filePath, parseDjangoRoutes(filePath, source));
+  }
+  const includedRouteFiles = await djangoIncludedRouteFiles(root, routesByFile);
+  const routeFilesToSeed = [...routesByFile.keys()].filter(
+    (filePath) => !includedRouteFiles.has(filePath),
+  );
+  for (const filePath of routeFilesToSeed) {
+    const routes = routesByFile.get(filePath) ?? [];
+    for (const route of routes) {
+      for (const expanded of await expandDjangoIncludedRoutes(
+        root,
+        route,
+        routesByFile,
+        new Set([filePath]),
+      )) {
+        const tests = associatedTests([expanded.filePath], testFiles, testCommand);
+        seeds.push({
+          title: `Django route ${expanded.routePath}`,
+          summary: djangoRouteSummary(expanded),
+          kind: "route",
+          source: "python-django-route",
+          confidence: "high",
+          entryPath: expanded.filePath,
+          symbol: expanded.symbol,
+          route: expanded.routePath,
+          command: null,
+          ownedFiles: [{ path: expanded.filePath, reason: "Django URL route declaration" }],
+          contextFiles: tests.map((test) => ({ path: test.path, reason: "associated test" })),
+          tests,
+          tags: ["python", "django", "route"],
+          trustBoundaries: djangoRouteTrustBoundaries(expanded),
+          testCommand,
+          skipNearbyTests: true,
+        });
+      }
     }
   }
   return seeds;
+}
+
+async function djangoIncludedRouteFiles(
+  root: string,
+  routesByFile: Map<string, DjangoRoute[]>,
+): Promise<Set<string>> {
+  const included = new Set<string>();
+  for (const routes of routesByFile.values()) {
+    for (const route of routes) {
+      if (!route.include || route.symbol === null) {
+        continue;
+      }
+      const includePath = await resolveDjangoIncludeModule(root, route.symbol);
+      if (includePath !== null && routesByFile.has(includePath)) {
+        included.add(includePath);
+      }
+    }
+  }
+  return included;
+}
+
+async function expandDjangoIncludedRoutes(
+  root: string,
+  route: DjangoRoute,
+  routesByFile: Map<string, DjangoRoute[]>,
+  visited: Set<string>,
+): Promise<DjangoRoute[]> {
+  const routes = [route];
+  if (!route.include || route.symbol === null) {
+    return routes;
+  }
+  const includePath = await resolveDjangoIncludeModule(root, route.symbol);
+  if (includePath === null || visited.has(includePath)) {
+    return routes;
+  }
+  let includedRoutes = routesByFile.get(includePath);
+  if (includedRoutes === undefined) {
+    const source = await readFile(join(root, includePath), "utf8");
+    includedRoutes = parseDjangoRoutes(includePath, source);
+    routesByFile.set(includePath, includedRoutes);
+  }
+  const nextVisited = new Set([...visited, includePath]);
+  for (const included of includedRoutes) {
+    const mounted = {
+      ...included,
+      routePath: joinDjangoRoutePaths(route.routePath, included.routePath),
+    };
+    routes.push(...(await expandDjangoIncludedRoutes(root, mounted, routesByFile, nextVisited)));
+  }
+  return routes;
+}
+
+async function resolveDjangoIncludeModule(
+  root: string,
+  moduleName: string,
+): Promise<string | null> {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/u.test(moduleName)) {
+    return null;
+  }
+  const modulePath = `${moduleName.replace(/\./gu, "/")}.py`;
+  const candidates = new Set<string>([modulePath]);
+  for (const sourceRoot of await pythonSourceRoots(root)) {
+    candidates.add(`${sourceRoot}/${modulePath}`);
+  }
+  for (const candidate of candidates) {
+    if (await isSafeFile(root, join(root, candidate))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function joinDjangoRoutePaths(prefix: string, route: string): string {
+  if (prefix === "/") {
+    return route;
+  }
+  if (route === "/") {
+    return prefix;
+  }
+  return normalizeDjangoRoutePath(`${prefix.replace(/^\/+/u, "")}${route.replace(/^\/+/u, "")}`);
 }
 
 function sourceLooksDjangoUrls(
@@ -1221,7 +1317,8 @@ function sourceLooksFlask(source: string): boolean {
 
 function parseFlaskRoutes(filePath: string, source: string): FlaskRoute[] {
   const routes: FlaskRoute[] = [];
-  let pending: Array<{ routePath: string; methods: string[] }> = [];
+  const prefixes = parseFlaskBlueprintPrefixes(source);
+  let pending: Array<{ target: string; routePath: string; methods: string[] }> = [];
   let decoratorSource: string | null = null;
   let decoratorDepth = 0;
   for (const line of source.split("\n")) {
@@ -1257,7 +1354,12 @@ function parseFlaskRoutes(filePath: string, source: string): FlaskRoute[] {
     const functionName = /^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/u.exec(line)?.[1];
     if (functionName !== undefined && pending.length > 0) {
       for (const item of pending) {
-        routes.push({ filePath, functionName, ...item });
+        routes.push({
+          filePath,
+          functionName,
+          routePath: combineFastApiPaths(prefixes.get(item.target) ?? "", item.routePath),
+          methods: item.methods,
+        });
       }
       pending = [];
       continue;
@@ -1279,21 +1381,142 @@ function startsFlaskRouteDecorator(line: string): boolean {
   return /^@[A-Za-z_][A-Za-z0-9_.]*\.route\(/u.test(line);
 }
 
-function parseFlaskRouteDecorator(line: string): { routePath: string; methods: string[] } | null {
-  const match = /^\s*@[A-Za-z_][A-Za-z0-9_.]*\.route\(\s*(["'])(.*?)\1(.*)\)\s*(?:#.*)?$/u.exec(
+function parseFlaskRouteDecorator(
+  line: string,
+): { target: string; routePath: string; methods: string[] } | null {
+  const match = /^\s*@([A-Za-z_][A-Za-z0-9_.]*)\.route\(\s*(["'])(.*?)\2(.*)\)\s*(?:#.*)?$/u.exec(
     line,
   );
-  if (match?.[2] === undefined) {
+  const target = match?.[1];
+  const routePath = match?.[3];
+  if (target === undefined || routePath === undefined) {
     return null;
   }
-  const methods = parsePythonRouteMethods(match[3] ?? "");
+  const methods = parsePythonRouteMethods(match?.[4] ?? "");
   if (methods === null) {
     return null;
   }
   return {
-    routePath: match[2],
+    target,
+    routePath,
     methods,
   };
+}
+
+function parseFlaskBlueprintPrefixes(source: string): Map<string, string | null> {
+  const prefixes = new Map<string, string | null>();
+  for (const [target, prefix] of parseFlaskBlueprintConstructorPrefixes(source)) {
+    prefixes.set(target, prefix);
+  }
+  for (const [target, prefix] of parseFlaskBlueprintRegistrationPrefixes(source)) {
+    prefixes.set(target, prefix);
+  }
+  return prefixes;
+}
+
+function parseFlaskBlueprintConstructorPrefixes(source: string): Map<string, string> {
+  const prefixes = new Map<string, string>();
+  const blueprintCallPattern = /\bBlueprint\s*\(/gu;
+  for (const match of source.matchAll(blueprintCallPattern)) {
+    const callStart = match.index;
+    const openParenIndex = source.indexOf("(", callStart);
+    if (openParenIndex === -1) {
+      continue;
+    }
+    const prefixSegment = source.slice(0, callStart).trimEnd();
+    const varName =
+      /(?:^|[\n;])\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n;]+)?=\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?$/u.exec(
+        prefixSegment,
+      )?.[1];
+    if (varName === undefined) {
+      continue;
+    }
+    const closeParenIndex = findBalancedParenthesis(source, openParenIndex + 1);
+    if (closeParenIndex === -1) {
+      continue;
+    }
+    const args = splitTopLevelPythonArgs(source.slice(openParenIndex + 1, closeParenIndex));
+    const prefix = parsePythonKeywordStringArg(args, "url_prefix");
+    if (prefix !== null) {
+      prefixes.set(varName, prefix);
+    }
+  }
+  return prefixes;
+}
+
+function parseFlaskBlueprintRegistrationPrefixes(source: string): Map<string, string | null> {
+  const prefixes = new Map<string, string | null>();
+  const registerCallPattern = /\.register_blueprint\s*\(/gu;
+  for (const match of source.matchAll(registerCallPattern)) {
+    const callStart = match.index;
+    const openParenIndex = source.indexOf("(", callStart);
+    if (openParenIndex === -1) {
+      continue;
+    }
+    const closeParenIndex = findBalancedParenthesis(source, openParenIndex + 1);
+    if (closeParenIndex === -1) {
+      continue;
+    }
+    const args = splitTopLevelPythonArgs(source.slice(openParenIndex + 1, closeParenIndex));
+    const target = args[0]?.trim();
+    if (target === undefined || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(target)) {
+      continue;
+    }
+    const prefixValue = parsePythonKeywordArgValue(args, "url_prefix");
+    if (prefixValue !== undefined) {
+      const normalizedPrefixValue = stripPythonInlineComment(prefixValue).trim();
+      if (normalizedPrefixValue === "None") {
+        continue;
+      }
+      prefixes.set(target, pythonStringLiteralValue(normalizedPrefixValue));
+    }
+  }
+  return prefixes;
+}
+
+function parsePythonKeywordStringArg(args: string[], name: string): string | null {
+  const value = parsePythonKeywordArgValue(args, name);
+  return value === undefined
+    ? null
+    : pythonStringLiteralValue(stripPythonInlineComment(value).trim());
+}
+
+function parsePythonKeywordArgValue(args: string[], name: string): string | undefined {
+  const pattern = new RegExp(`^\\s*${name}\\s*=\\s*([\\s\\S]*)$`, "u");
+  return pattern.exec(args.find((arg) => pattern.test(arg)) ?? "")?.[1];
+}
+
+function stripPythonInlineComment(source: string): string {
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === undefined) {
+      break;
+    }
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "#") {
+      return source.slice(0, index);
+    }
+  }
+  return source;
 }
 
 function parsePythonRouteMethods(args: string): string[] | null {

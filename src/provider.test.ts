@@ -22,6 +22,7 @@ const {
   parseReviewOutput,
   parseOrThrow,
   piThinkingLevel,
+  providerExitCode,
   providerJsonSchema,
 } = __testing;
 
@@ -100,6 +101,30 @@ function expectMalformed(fn: () => unknown, message: RegExp): void {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function terminalEnvelope(stopReason: string, id = 2): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    result: { stopReason, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+  });
+}
+
+function expectStopReasonError(
+  fn: () => unknown,
+  expected: { code: string; exitCode: number; stopReason: string },
+): void {
+  try {
+    fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(ClawpatchError);
+    expect((err as ClawpatchError).code).toBe(expected.code);
+    expect((err as ClawpatchError).exitCode).toBe(expected.exitCode);
+    expect((err as Error).message).toContain(`stopReason="${expected.stopReason}"`);
+    return;
+  }
+  throw new Error(`expected ClawpatchError with code ${expected.code}`);
 }
 
 describe("extractJson", () => {
@@ -363,6 +388,57 @@ describe("codexFailureMessage", () => {
   });
 });
 
+describe("providerExitCode", () => {
+  it("classifies auth failures from stdout-only provider output", () => {
+    expect(providerExitCode("Unauthorized: Wrong API Key", "")).toBe(4);
+    expect(providerExitCode("auth required", "")).toBe(4);
+    expect(providerExitCode("Incorrect API key provided", "")).toBe(4);
+    expect(providerExitCode("invalid_api_key", "")).toBe(4);
+    expect(providerExitCode("API key is required", "")).toBe(4);
+    expect(providerExitCode("API key not found", "")).toBe(4);
+    expect(providerExitCode("OPENAI_API_KEY is not set", "")).toBe(4);
+    expect(providerExitCode("insufficient permissions", "")).toBe(4);
+    expect(providerExitCode("api.responses.write scope is required", "")).toBe(4);
+    expect(providerExitCode("AuthenticationError: invalid credentials", "")).toBe(4);
+    expect(providerExitCode("authentication_error", "")).toBe(4);
+    expect(providerExitCode("AUTH_REQUIRED", "")).toBe(4);
+  });
+
+  it("classifies quota failures from stdout-only provider output", () => {
+    expect(providerExitCode("quota exceeded for this organization", "")).toBe(5);
+    expect(providerExitCode("You exceeded your current quota", "")).toBe(5);
+    expect(providerExitCode("insufficient_quota", "")).toBe(5);
+    expect(providerExitCode("quota_exceeded", "")).toBe(5);
+    expect(providerExitCode("RateLimitError: retry later", "")).toBe(5);
+    expect(providerExitCode("rate_limit_error", "")).toBe(5);
+  });
+
+  it("does not classify benign auth-looking stdout as auth failures", () => {
+    expect(providerExitCode("author: Jane", "")).toBe(1);
+    expect(providerExitCode("registered oauth-callback route", "")).toBe(1);
+    expect(providerExitCode("authority metadata loaded", "")).toBe(1);
+  });
+
+  it("does not classify generic rate-limiting discussion as quota failures", () => {
+    expect(providerExitCode("consider adding rate-limiting to this endpoint", "")).toBe(1);
+    expect(providerExitCode("document the rate limit policy for future work", "")).toBe(1);
+  });
+
+  it("keeps classifying real rate-limit failures", () => {
+    expect(providerExitCode("rate limit exceeded for this organization", "")).toBe(5);
+  });
+
+  it("keeps classifying stderr failures", () => {
+    expect(providerExitCode("", "please login before running the provider")).toBe(4);
+    expect(providerExitCode("", "expired API key")).toBe(4);
+    expect(providerExitCode("", "auth credentials not found")).toBe(4);
+  });
+
+  it("keeps generic failures when neither stream has a known signal", () => {
+    expect(providerExitCode("process exited unexpectedly", "")).toBe(1);
+  });
+});
+
 describe("parseAcpxAgent", () => {
   it("defaults null model to codex/null", () => {
     expect(parseAcpxAgent(null)).toEqual({ agent: "codex", agentModel: null });
@@ -519,6 +595,81 @@ describe("extractAcpxJson", () => {
     expect(extractAcpxJson(stdout)).toEqual({ ok: true });
   });
 
+  it("preserves end_turn happy path with message chunks", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"ok":'),
+      textChunk("agent_message_chunk", "true}"),
+      terminalEnvelope("end_turn"),
+    ].join("\n");
+
+    expect(extractAcpxJson(stdout)).toEqual({ ok: true });
+  });
+
+  it("surfaces stopReason cancelled as agent-cancelled", () => {
+    const stdout = [
+      updateEnvelope({ sessionUpdate: "usage_update", usage: { inputTokens: 1, outputTokens: 0 } }),
+      terminalEnvelope("cancelled"),
+    ].join("\n");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-cancelled",
+      exitCode: 1,
+      stopReason: "cancelled",
+    });
+  });
+
+  it("surfaces stopReason refusal as agent-refused", () => {
+    const stdout = terminalEnvelope("refusal");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-refused",
+      exitCode: 1,
+      stopReason: "refusal",
+    });
+  });
+
+  it("surfaces stopReason max_tokens as agent-truncated", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"partial":'),
+      terminalEnvelope("max_tokens"),
+    ].join("\n");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-truncated",
+      exitCode: 8,
+      stopReason: "max_tokens",
+    });
+  });
+
+  it("surfaces stopReason max_turn_requests as agent-truncated", () => {
+    const stdout = terminalEnvelope("max_turn_requests");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-truncated",
+      exitCode: 8,
+      stopReason: "max_turn_requests",
+    });
+  });
+
+  it("maps unknown stopReason defensively to agent-cancelled", () => {
+    const stdout = terminalEnvelope("future_reason_xyz");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-cancelled",
+      exitCode: 8,
+      stopReason: "future_reason_xyz",
+    });
+  });
+
+  it("falls back to current behavior with no terminal envelope", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"legacy":'),
+      textChunk("agent_message_chunk", "true}"),
+    ].join("\n");
+
+    expect(extractAcpxJson(stdout)).toEqual({ legacy: true });
+  });
+
   it("survives a 256-line NDJSON fixture over 8KB", () => {
     const filler = Array.from({ length: 255 }, (_, idx) =>
       updateEnvelope({
@@ -673,6 +824,38 @@ describe("extractOpencodeJson", () => {
       return;
     }
     throw new Error("expected provider auth failure");
+  });
+
+  it("classifies opencode stderr-style error events as provider auth failures", () => {
+    const stdout = JSON.stringify({
+      type: "error",
+      error: { data: { message: "auth credentials not found" } },
+    });
+
+    try {
+      extractOpencodeJson(stdout);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClawpatchError);
+      expect((err as ClawpatchError).exitCode).toBe(4);
+      return;
+    }
+    throw new Error("expected provider auth failure");
+  });
+
+  it("classifies opencode stderr-style error events as provider quota failures", () => {
+    const stdout = JSON.stringify({
+      type: "error",
+      error: { data: { message: "rate limit" } },
+    });
+
+    try {
+      extractOpencodeJson(stdout);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClawpatchError);
+      expect((err as ClawpatchError).exitCode).toBe(5);
+      return;
+    }
+    throw new Error("expected provider quota failure");
   });
 });
 

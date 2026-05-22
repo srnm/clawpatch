@@ -148,7 +148,7 @@ export async function rubySeeds(root: string): Promise<FeatureSeed[]> {
   }
 
   seeds.push(...(await jekyllSeeds(root, info)));
-  seeds.push(...(await railsSeeds(root, info)));
+  seeds.push(...(await railsSeeds(root, info, testFiles, commandForTest, testCommand)));
 
   for (const testSuite of standaloneTestSuites(testFiles, commandForTest)) {
     seeds.push(testSuite);
@@ -344,13 +344,26 @@ async function isJekyllSite(root: string, info: RubyProjectInfo): Promise<boolea
   return (await pathExists(join(root, "_config.yml"))) && info.dependencies.has("jekyll");
 }
 
-async function railsSeeds(root: string, info: RubyProjectInfo): Promise<FeatureSeed[]> {
+type RailsRoute = {
+  method: string;
+  path: string;
+  target: string;
+};
+
+async function railsSeeds(
+  root: string,
+  info: RubyProjectInfo,
+  testFiles: string[],
+  commandForTest: (path: string) => string | null,
+  testCommand: string | null,
+): Promise<FeatureSeed[]> {
   if (!(await isRailsApp(root, info))) {
     return [];
   }
   const trustBoundaries = rubyTrustBoundaries("rails app", info.dependencies);
   const seeds: FeatureSeed[] = [];
   const configFiles = await railsConfigFiles(root);
+  const routeFile = "config/routes.rb";
   if (configFiles.length > 0) {
     seeds.push({
       title: "Rails application configuration",
@@ -368,6 +381,42 @@ async function railsSeeds(root: string, info: RubyProjectInfo): Promise<FeatureS
       trustBoundaries,
       skipNearbyTests: true,
     });
+  }
+
+  if (await isSafeFile(root, join(root, routeFile))) {
+    const source = await readFile(join(root, routeFile), "utf8");
+    for (const route of railsRouteDeclarations(source)) {
+      const handlerPath = await railsRouteHandlerPath(root, route.target);
+      const entryPath = handlerPath ?? routeFile;
+      const tests = associatedTests([entryPath], testFiles, commandForTest);
+      seeds.push({
+        title: `Rails route ${route.method} ${route.path}`,
+        summary: `Rails route ${route.method} ${route.path} maps to ${route.target}.`,
+        kind: "route",
+        source: "rails-route",
+        confidence: "high",
+        entryPath,
+        identityKey: `rails-route:${route.method}:${route.path}:${route.target}`,
+        symbol: route.target,
+        route: `${route.method} ${route.path}`,
+        command: null,
+        ownedFiles: [
+          {
+            path: entryPath,
+            reason: handlerPath === null ? "rails route declaration" : "rails route handler",
+          },
+        ],
+        contextFiles: uniqueFileRefs([
+          ...(handlerPath === null ? [] : [{ path: routeFile, reason: "route definition" }]),
+          ...tests.map((test) => ({ path: test.path, reason: "associated test" })),
+        ]),
+        tests,
+        tags: ["ruby", "rails", "route"],
+        trustBoundaries: railsRouteTrustBoundaries(route, trustBoundaries),
+        testCommand,
+        skipNearbyTests: true,
+      });
+    }
   }
 
   const dbFiles = await railsDatabaseFiles(root);
@@ -437,6 +486,259 @@ async function railsSeeds(root: string, info: RubyProjectInfo): Promise<FeatureS
   }
 
   return seeds;
+}
+
+function railsRouteDeclarations(source: string): RailsRoute[] {
+  const routes: RailsRoute[] = [];
+  const seen = new Set<string>();
+  let drawBlockDepth = 0;
+  let skippedBlockDepth = 0;
+  for (const line of stripRubyComments(source).split("\n")) {
+    const blockDelta = railsLineBlockDelta(line);
+    if (drawBlockDepth === 0) {
+      if (startsRailsRoutesDrawBlock(line) && blockDelta > 0) {
+        drawBlockDepth = blockDelta;
+      }
+      continue;
+    }
+
+    if (skippedBlockDepth > 0) {
+      skippedBlockDepth = Math.max(0, skippedBlockDepth + blockDelta);
+      drawBlockDepth = Math.max(0, drawBlockDepth + blockDelta);
+      continue;
+    }
+    const route = parseRailsRouteLine(line);
+    if (route !== null) {
+      const key = [route.method, route.path, route.target].join("\0");
+      if (!seen.has(key)) {
+        seen.add(key);
+        routes.push(route);
+      }
+    }
+    if (blockDelta === 0) {
+      continue;
+    }
+
+    if (blockDelta > 0) {
+      skippedBlockDepth = blockDelta;
+    }
+    drawBlockDepth = Math.max(0, drawBlockDepth + blockDelta);
+  }
+  return routes;
+}
+
+function startsRailsRoutesDrawBlock(line: string): boolean {
+  return /\.routes\.draw\b/u.test(line);
+}
+
+function railsLineBlockDelta(line: string): number {
+  const code = rubyLineWithoutStrings(line);
+  return rubyTokenCount(code, "do") - rubyTokenCount(code, "end") + rubyBraceDelta(code);
+}
+
+function rubyTokenCount(source: string, token: string): number {
+  const matches = source.match(new RegExp(`\\b${token}\\b`, "gu"));
+  return matches?.length ?? 0;
+}
+
+function rubyBraceDelta(source: string): number {
+  let delta = 0;
+  for (const char of source) {
+    if (char === "{") {
+      delta += 1;
+    } else if (char === "}") {
+      delta -= 1;
+    }
+  }
+  return delta;
+}
+
+function rubyLineWithoutStrings(line: string): string {
+  let code = "";
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "/" && rubyRegexLiteralStart(line, index)) {
+      const end = rubyRegexLiteralEnd(line, index);
+      code += " ".repeat(end - index + 1);
+      index = end;
+      continue;
+    }
+    if (char !== "'" && char !== '"') {
+      code += char;
+      continue;
+    }
+    code += " ";
+    const quote = char;
+    index += 1;
+    for (; index < line.length; index += 1) {
+      const next = line[index];
+      code += " ";
+      if (next === "\\") {
+        index += 1;
+        code += " ";
+      } else if (next === quote) {
+        break;
+      }
+    }
+  }
+  return code;
+}
+
+function rubyRegexLiteralStart(line: string, index: number): boolean {
+  const before = line.slice(0, index).trimEnd();
+  const previous = before.at(-1);
+  return previous === undefined || /[([{=,:!&|?>]/u.test(previous);
+}
+
+function rubyRegexLiteralEnd(line: string, start: number): number {
+  let escaped = false;
+  let inCharacterClass = false;
+  for (let index = start + 1; index < line.length; index += 1) {
+    const char = line[index];
+    if (escaped) {
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === "[") {
+      inCharacterClass = true;
+    } else if (char === "]") {
+      inCharacterClass = false;
+    } else if (char === "/" && !inCharacterClass) {
+      return index;
+    }
+  }
+  return start;
+}
+
+function parseRailsRouteLine(line: string): RailsRoute | null {
+  const rootArgs = /^\s*root\b\s*(?:\(\s*)?(.*)$/u.exec(line)?.[1];
+  if (rootArgs !== undefined) {
+    const target = railsRouteTarget(rootArgs, true);
+    return target === null ? null : { method: "GET", path: "/", target };
+  }
+
+  const route = /^\s*(get|post|put|patch|delete)\b\s*(?:\(\s*)?(.*)$/iu.exec(line);
+  if (route === null) {
+    return null;
+  }
+  const method = route[1]?.toUpperCase();
+  const args = route[2];
+  if (method === undefined || args === undefined) {
+    return null;
+  }
+  const pathLiteral = consumeRubyStringLiteral(args);
+  if (pathLiteral === null) {
+    return null;
+  }
+  const path = normalizeRailsRoutePath(pathLiteral.value);
+  const target = railsRouteTarget(pathLiteral.rest, true);
+  return path === null || target === null ? null : { method, path, target };
+}
+
+function railsRouteTarget(args: string, allowPositional: boolean): string | null {
+  const toMatch = /(?:^|[,\s])to:\s*/u.exec(args);
+  if (toMatch !== null) {
+    const literal = consumeRubyStringLiteral(args.slice(toMatch.index + toMatch[0].length));
+    return literal === null ? null : normalizeRailsRouteTarget(literal.value);
+  }
+
+  if (!allowPositional) {
+    return null;
+  }
+  const positionalArgs = args.trimStart().replace(/^,\s*/u, "");
+  const literal = consumeRubyStringLiteral(positionalArgs);
+  return literal === null ? null : normalizeRailsRouteTarget(literal.value);
+}
+
+function consumeRubyStringLiteral(source: string): { value: string; rest: string } | null {
+  const leadingWhitespace = /^\s*/u.exec(source)?.[0].length ?? 0;
+  const trimmed = source.slice(leadingWhitespace);
+  const quote = trimmed[0];
+  if (quote === "'" || quote === '"') {
+    let escaped = false;
+    for (let index = 1; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        return {
+          value: trimmed.slice(1, index),
+          rest: trimmed.slice(index + 1),
+        };
+      }
+    }
+    return null;
+  }
+
+  const percent = /^%[qQ]([<{[(]|[^A-Za-z0-9\s])/u.exec(trimmed)?.[1];
+  if (percent === undefined) {
+    return null;
+  }
+  const close =
+    new Map([
+      ["<", ">"],
+      ["{", "}"],
+      ["[", "]"],
+      ["(", ")"],
+    ]).get(percent) ?? percent;
+  const rest = trimmed.slice(3);
+  const end = rest.indexOf(close);
+  return end === -1
+    ? null
+    : {
+        value: rest.slice(0, end),
+        rest: rest.slice(end + 1),
+      };
+}
+
+function normalizeRailsRoutePath(path: string): string | null {
+  const trimmed = path.trim();
+  if (trimmed.length === 0 || trimmed.includes("#{") || trimmed.includes("*")) {
+    return null;
+  }
+  const normalized = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return normalized.length > 1 ? normalized.replace(/\/+$/u, "") : normalized;
+}
+
+function normalizeRailsRouteTarget(target: string): string | null {
+  const trimmed = target.trim();
+  return /^[A-Za-z0-9_/]+#[A-Za-z_][A-Za-z0-9_!?]*$/u.test(trimmed) ? trimmed : null;
+}
+
+async function railsRouteHandlerPath(root: string, target: string): Promise<string | null> {
+  const controller = target.split("#")[0];
+  if (controller === undefined) {
+    return null;
+  }
+  const path = `app/controllers/${controller}_controller.rb`;
+  return (await isSafeFile(root, join(root, path))) ? path : null;
+}
+
+function railsRouteTrustBoundaries(
+  route: RailsRoute,
+  appTrustBoundaries: TrustBoundary[],
+): TrustBoundary[] {
+  const boundaries = new Set<TrustBoundary>([
+    ...appTrustBoundaries,
+    "user-input",
+    "network",
+    "serialization",
+  ]);
+  if (
+    route.method !== "GET" ||
+    /(^|\/)(account|admin|auth|login|logout|oauth|password|session|token)(\/|$)/iu.test(
+      route.path,
+    ) ||
+    /(^|\/)(admin|auth|oauth|sessions?)(\/|#|$)/iu.test(route.target)
+  ) {
+    boundaries.add("auth");
+  }
+  if (/(^|\/)(callback|integration|webhook)(\/|$)/iu.test(route.path)) {
+    boundaries.add("external-api");
+  }
+  return [...boundaries];
 }
 
 async function isRailsApp(root: string, info: RubyProjectInfo): Promise<boolean> {
@@ -997,4 +1299,17 @@ function uniquePaths(paths: string[]): string[] {
 
 function uniquePathsInOrder(paths: string[]): string[] {
   return [...new Set(paths)];
+}
+
+function uniqueFileRefs(refs: SeedFileRef[]): SeedFileRef[] {
+  const seen = new Set<string>();
+  const uniqueRefs: SeedFileRef[] = [];
+  for (const ref of refs) {
+    const key = `${ref.path}\0${ref.reason}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueRefs.push(ref);
+    }
+  }
+  return uniqueRefs;
 }

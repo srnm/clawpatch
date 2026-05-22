@@ -511,7 +511,7 @@ async function runPiJson(
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         piFailureMessage(result.stdout, result.stderr),
-        providerExitCode(result.stderr),
+        providerExitCode(result.stdout, result.stderr),
         "provider-failure",
       );
     }
@@ -783,7 +783,7 @@ async function runCodexJson(
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         codexFailureMessage(result.stdout, result.stderr),
-        providerExitCode(result.stderr),
+        providerExitCode(result.stdout, result.stderr),
         "provider-failure",
       );
     }
@@ -873,7 +873,7 @@ async function runOpencodeJson(
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         opencodeFailureMessage(result.stdout, result.stderr),
-        providerExitCode(result.stderr),
+        providerExitCode(result.stdout, result.stderr),
         "provider-failure",
       );
     }
@@ -933,7 +933,7 @@ export function extractOpencodeJson(stdout: string): unknown {
               : "unknown";
       throw new ClawpatchError(
         `opencode provider error: ${message}`,
-        providerExitCode(message),
+        providerExitCode("", message),
         "provider-failure",
       );
     }
@@ -1047,24 +1047,55 @@ function buildAcpxPrompt(prompt: string, schema: object, permission: "read" | "a
   );
 }
 
+// Map acpx promptResult.stopReason -> ClawpatchError code/exit pair.
+// `end_turn` is the only successful reason; everything else surfaces as a
+// typed error so callers can distinguish cancellation / refusal / truncation
+// from an actual envelope-shape regression.
+//
+// Source: acpx/src/runtime/engine/manager.ts emits the terminal JSON-RPC
+// response `{"jsonrpc":"2.0","id":N,"result":{"stopReason":<reason>,...}}`
+// for every `session/prompt`. Known reasons in acpx 0.8.0 / claude-agent-acp
+// 0.31.4 are `end_turn | cancelled | refusal | max_tokens | max_turn_requests`
+// (plus the older `max_turns_exceeded` spelling seen in agent-driven turn loops).
+const ACPX_STOP_REASON_CODES: Record<string, string> = {
+  cancelled: "agent-cancelled",
+  refusal: "agent-refused",
+  max_tokens: "agent-truncated",
+  max_turn_requests: "agent-truncated",
+  max_turns_exceeded: "agent-truncated",
+};
+const ACPX_STOP_EXIT_CODES: Record<string, number> = {
+  cancelled: 1,
+  refusal: 1,
+  max_tokens: 8,
+  max_turn_requests: 8,
+  max_turns_exceeded: 8,
+};
+
 export function extractAcpxJson(stdout: string): unknown {
-  const { candidates, observedKinds } = acpxJsonCandidates(stdout, false);
-  return parseAcpxJsonCandidates(candidates, observedKinds, (output) => output);
+  const { candidates, observedKinds, terminalStopReason } = acpxJsonCandidates(stdout, false);
+  return parseAcpxJsonCandidates(candidates, observedKinds, terminalStopReason, (output) => output);
 }
 
 function parseAcpxJsonOutput<T>(stdout: string, parseOutput: (output: unknown) => T): T {
-  const { candidates, observedKinds } = acpxJsonCandidates(stdout, true);
-  return parseAcpxJsonCandidates(candidates, observedKinds, parseOutput);
+  const { candidates, observedKinds, terminalStopReason } = acpxJsonCandidates(stdout, true);
+  return parseAcpxJsonCandidates(candidates, observedKinds, terminalStopReason, parseOutput);
 }
 
 function acpxJsonCandidates(
   stdout: string,
   retrySafe: boolean,
-): { candidates: string[]; observedKinds: Set<string> } {
+): { candidates: string[]; observedKinds: Set<string>; terminalStopReason: string | undefined } {
   const toolCandidates: string[] = [];
   const messageChunks: string[] = [];
   const thoughtChunks: string[] = [];
   const observedKinds = new Set<string>();
+  // Last-seen terminal JSON-RPC response envelope: `{id, result: {stopReason, ...}}`.
+  // acpx emits exactly one per `session/prompt` turn (see
+  // acpx/src/runtime/engine/manager.ts). If this is anything other than
+  // "end_turn" the agent is telling us the turn produced no answer, and we
+  // should surface a typed error instead of trying to parse chunks.
+  let terminalStopReason: string | undefined;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
@@ -1072,6 +1103,8 @@ function acpxJsonCandidates(
     }
     let env: {
       method?: string;
+      id?: unknown;
+      result?: { stopReason?: unknown };
       params?: {
         update?: {
           sessionUpdate?: string;
@@ -1084,6 +1117,17 @@ function acpxJsonCandidates(
       env = JSON.parse(trimmed);
     } catch {
       continue;
+    }
+    if (
+      env !== null &&
+      typeof env === "object" &&
+      Object.prototype.hasOwnProperty.call(env, "id") &&
+      env.result !== undefined &&
+      env.result !== null &&
+      typeof env.result === "object" &&
+      typeof env.result.stopReason === "string"
+    ) {
+      terminalStopReason = env.result.stopReason;
     }
     if (env.method !== "session/update") {
       continue;
@@ -1120,18 +1164,35 @@ function acpxJsonCandidates(
         ...toolCandidates.toReversed(),
         ...(thoughtChunks.length > 0 ? [thoughtChunks.join("")] : []),
       ];
-  return { candidates, observedKinds };
+  return { candidates, observedKinds, terminalStopReason };
 }
 
 function parseAcpxJsonCandidates<T>(
   candidates: string[],
   observedKinds: Set<string>,
+  terminalStopReason: string | undefined,
   parseOutput: (output: unknown) => T,
 ): T {
-  if (candidates.length === 0) {
+  if (terminalStopReason !== undefined && terminalStopReason !== "end_turn") {
+    const code = ACPX_STOP_REASON_CODES[terminalStopReason] ?? "agent-cancelled";
+    const exit = ACPX_STOP_EXIT_CODES[terminalStopReason] ?? 8;
     throw new ClawpatchError(
-      `acpx provider produced no extractable text. Observed envelope kinds: ` +
-        `[${[...observedKinds].join(", ")}]. ` +
+      `acpx prompt did not complete: stopReason="${terminalStopReason}". ` +
+        `Observed envelope kinds: [${[...observedKinds].join(", ")}].`,
+      exit,
+      code,
+    );
+  }
+
+  if (candidates.length === 0) {
+    const stopReasonNote =
+      terminalStopReason === "end_turn"
+        ? `acpx reported stopReason=end_turn but emitted no message chunks. ` +
+          `This is a clawpatch parser bug or a prompt that produced only tool calls. `
+        : ``;
+    throw new ClawpatchError(
+      `acpx provider produced no extractable text. ${stopReasonNote}` +
+        `Observed envelope kinds: [${[...observedKinds].join(", ")}]. ` +
         `acpx envelope shape may have changed since clawpatch was tested ` +
         `against ${ACPX_TESTED_VERSIONS}. Check the installed acpx version.`,
       8,
@@ -1209,7 +1270,7 @@ async function runGrokJson(
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         `grok provider failed: ${result.stderr || result.stdout}`,
-        providerExitCode(result.stderr),
+        providerExitCode(result.stdout, result.stderr),
         "provider-failure",
       );
     }
@@ -1273,11 +1334,24 @@ function grokEnvelopeText(value: unknown): string | null {
   return null;
 }
 
-function providerExitCode(stderr: string): number {
-  if (/auth|login|api key|unauthorized|wrong api key/iu.test(stderr)) {
+const PROVIDER_AUTH_FAILURE_PATTERN =
+  /\b(?:unauthori[sz]ed|(?:wrong|incorrect|invalid|missing|no)[\s_-]+api[\s_-]*key|api[\s_-]*key\s+(?:is\s+)?(?:missing|required|invalid|expired|not[\s_-]+found|not[\s_-]+set)|[A-Z0-9_]*API[_-]?KEY\s+(?:is\s+)?(?:missing|required|invalid|expired|not[\s_-]+set)|not authenticated|auth(?:entication|orization)?[\s_-]*(?:failed|required|missing|error)|login\s+(?:required|failed)|please\s+(?:log\s*in|login)|missing scopes?|insufficient permissions?|api\.responses\.write)\b/iu;
+const PROVIDER_QUOTA_FAILURE_PATTERN =
+  /\b(?:quota[\s_-]+(?:exceeded|exhausted|reached)|(?:exceeded|exhausted|reached)[\s_-]+(?:your[\s_-]+)?(?:current[\s_-]+)?quota|insufficient[\s_-]+quota|out[\s_-]+of[\s_-]+quota|rate[\s_-]*limit(?:ed|[\s_-]*(?:error|exceeded|reached))|too many requests)\b/iu;
+const PROVIDER_STDERR_AUTH_FAILURE_PATTERN = /auth|login|api key|unauthorized|wrong api key/iu;
+const PROVIDER_STDERR_QUOTA_FAILURE_PATTERN = /quota|rate.?limit/iu;
+
+function providerExitCode(stdout: string, stderr = ""): number {
+  if (
+    PROVIDER_STDERR_AUTH_FAILURE_PATTERN.test(stderr) ||
+    PROVIDER_AUTH_FAILURE_PATTERN.test(stdout)
+  ) {
     return 4;
   }
-  if (/quota|rate.?limit/iu.test(stderr)) {
+  if (
+    PROVIDER_STDERR_QUOTA_FAILURE_PATTERN.test(stderr) ||
+    PROVIDER_QUOTA_FAILURE_PATTERN.test(stdout)
+  ) {
     return 5;
   }
   return 1;
@@ -1394,5 +1468,6 @@ export const __testing = {
   parseReviewOutput,
   parseOrThrow,
   piThinkingLevel,
+  providerExitCode,
   providerJsonSchema,
 };

@@ -58,7 +58,8 @@ validation commands and records a patch attempt under `.clawpatch/`.
 - generic extension/plugin packages under workspace roots such as `extensions/*`
   and `plugins/*`, including package metadata, source, docs, and nearby tests
 - semantic Node source groups for large packages, including runtime, commands,
-  auth, storage, monitor, webhook, setup, server, and client slices
+  auth, storage, monitor, webhook, setup, server, client, and repeated filename
+  family slices
 - Nx project metadata from `project.json`, including project-scoped validation
   targets
 - Turborepo task metadata for workspace-aware validation commands and feature

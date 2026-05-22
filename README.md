@@ -149,7 +149,8 @@ Useful flags:
 - `--json`
 - `--plain`
 - `--limit <n>`
-- `--jobs <n>`
+- `--jobs <n>` (default: half of CPU cores, max 10)
+- `--rate-limit-per-minute <n>`
 - `--source <heuristic|auto|agent>`
 - `--feature <id>`
 - `--project <name-or-root>`

@@ -20,7 +20,8 @@ Current behavior:
 
 - selects pending features unless `--feature` is set
 - claims each feature with an atomic lock file plus the feature run lock
-- reviews with a bounded worker pool; default `--jobs` is `10`
+- reviews with a bounded worker pool; default `--jobs` is half of CPU cores, max 10
+- caps provider call starts with `--rate-limit-per-minute <n>` or `CLAWPATCH_RPM`
 - emits progress to stderr unless `--quiet` is set
 - builds bounded prompt context from owned files, context files, and tests
 - includes a prompt context manifest with included files, omitted files, byte

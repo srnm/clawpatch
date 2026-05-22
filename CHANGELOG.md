@@ -27,6 +27,7 @@
 - Improved Flask route mapping to preserve static blueprint URL prefixes, thanks @rohitjavvadi.
 - Improved Django route mapping to preserve literal `include()` route prefixes, thanks @rohitjavvadi.
 - Added conservative Rails route mapping for literal root and HTTP verb routes, thanks @rohitjavvadi.
+- Fixed heuristic feature mapping to honor configured path include/exclude filters, thanks @schedawg74.
 - Fixed Express route mapping for aliased Router imports that follow block comment banners, thanks @rohitjavvadi.
 - Fixed Laravel route mapping to include array-style `Route::group` prefixes, thanks @rohitjavvadi.
 - Fixed Fastify route-object mapping to emit static method arrays while ignoring dynamic entries, thanks @rohitjavvadi.

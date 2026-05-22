@@ -103,6 +103,30 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function terminalEnvelope(stopReason: string, id = 2): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    result: { stopReason, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+  });
+}
+
+function expectStopReasonError(
+  fn: () => unknown,
+  expected: { code: string; exitCode: number; stopReason: string },
+): void {
+  try {
+    fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(ClawpatchError);
+    expect((err as ClawpatchError).code).toBe(expected.code);
+    expect((err as ClawpatchError).exitCode).toBe(expected.exitCode);
+    expect((err as Error).message).toContain(`stopReason="${expected.stopReason}"`);
+    return;
+  }
+  throw new Error(`expected ClawpatchError with code ${expected.code}`);
+}
+
 describe("extractJson", () => {
   it("parses strict JSON directly", () => {
     const input = '{"findings":[],"inspected":{"files":[],"symbols":[],"notes":[]}}';
@@ -569,6 +593,81 @@ describe("extractAcpxJson", () => {
     ].join("\n");
 
     expect(extractAcpxJson(stdout)).toEqual({ ok: true });
+  });
+
+  it("preserves end_turn happy path with message chunks", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"ok":'),
+      textChunk("agent_message_chunk", "true}"),
+      terminalEnvelope("end_turn"),
+    ].join("\n");
+
+    expect(extractAcpxJson(stdout)).toEqual({ ok: true });
+  });
+
+  it("surfaces stopReason cancelled as agent-cancelled", () => {
+    const stdout = [
+      updateEnvelope({ sessionUpdate: "usage_update", usage: { inputTokens: 1, outputTokens: 0 } }),
+      terminalEnvelope("cancelled"),
+    ].join("\n");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-cancelled",
+      exitCode: 1,
+      stopReason: "cancelled",
+    });
+  });
+
+  it("surfaces stopReason refusal as agent-refused", () => {
+    const stdout = terminalEnvelope("refusal");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-refused",
+      exitCode: 1,
+      stopReason: "refusal",
+    });
+  });
+
+  it("surfaces stopReason max_tokens as agent-truncated", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"partial":'),
+      terminalEnvelope("max_tokens"),
+    ].join("\n");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-truncated",
+      exitCode: 8,
+      stopReason: "max_tokens",
+    });
+  });
+
+  it("surfaces stopReason max_turn_requests as agent-truncated", () => {
+    const stdout = terminalEnvelope("max_turn_requests");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-truncated",
+      exitCode: 8,
+      stopReason: "max_turn_requests",
+    });
+  });
+
+  it("maps unknown stopReason defensively to agent-cancelled", () => {
+    const stdout = terminalEnvelope("future_reason_xyz");
+
+    expectStopReasonError(() => extractAcpxJson(stdout), {
+      code: "agent-cancelled",
+      exitCode: 8,
+      stopReason: "future_reason_xyz",
+    });
+  });
+
+  it("falls back to current behavior with no terminal envelope", () => {
+    const stdout = [
+      textChunk("agent_message_chunk", '{"legacy":'),
+      textChunk("agent_message_chunk", "true}"),
+    ].join("\n");
+
+    expect(extractAcpxJson(stdout)).toEqual({ legacy: true });
   });
 
   it("survives a 256-line NDJSON fixture over 8KB", () => {

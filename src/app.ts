@@ -74,7 +74,7 @@ import {
   reasoningEfforts,
 } from "./types.js";
 import { validationCommandsForFeature } from "./validation.js";
-import { createRpmLimiter, defaultJobs, rpmFromFlag } from "./rpm-limiter.js";
+import { createRpmLimiter, defaultJobs, rpmFromFlag, type RpmLimiter } from "./rpm-limiter.js";
 
 export type AppContext = {
   root: string;
@@ -335,7 +335,6 @@ export async function reviewCommand(
           return;
         }
         try {
-          await limiter.acquire();
           const reviewed = await reviewFeature({
             context,
             loaded,
@@ -347,6 +346,7 @@ export async function reviewCommand(
             total: features.length,
             mode,
             customPrompt,
+            limiter,
             allowNonPendingFeatureReview: stringFlag(flags, "feature") !== undefined,
           });
           findingIds.push(...reviewed.findingIds);
@@ -656,6 +656,7 @@ type ReviewFeatureOptions = {
   total: number;
   mode: ReviewMode;
   customPrompt: string | null;
+  limiter: RpmLimiter;
   allowNonPendingFeatureReview: boolean;
 };
 
@@ -673,6 +674,7 @@ async function reviewFeature(
     total,
     mode,
     customPrompt,
+    limiter,
     allowNonPendingFeatureReview,
   } = options;
   const started = Date.now();
@@ -710,6 +712,7 @@ async function reviewFeature(
       featureId: feature.featureId,
       index,
       total,
+      limiter,
     });
     // Layer 1 drops: per-finding schema violations from parseReviewOutput.
     const droppedFindings: DroppedFinding[] = [...providerOutput.droppedFindings];
@@ -822,12 +825,14 @@ async function runProviderReviewWithRetry(args: {
   featureId: string;
   index: number;
   total: number;
+  limiter?: RpmLimiter;
 }): Promise<ProviderReviewOutput> {
-  const { provider, root, prompt, options, context, featureId, index, total } = args;
+  const { provider, root, prompt, options, context, featureId, index, total, limiter } = args;
   const maxAttempts = 1 + reviewRetries();
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      await limiter?.acquire();
       return await provider.review(root, prompt, options);
     } catch (error: unknown) {
       lastError = error;

@@ -177,6 +177,31 @@ describe("runProviderReviewWithRetry", () => {
     expect(review).toHaveBeenCalledTimes(2);
   });
 
+  it("acquires the RPM limiter before each retry attempt", async () => {
+    delete process.env["CLAWPATCH_REVIEW_RETRIES"];
+    const review = vi
+      .fn()
+      .mockRejectedValueOnce(new ClawpatchError("garbled", 8, "malformed-output"))
+      .mockResolvedValueOnce(emptyReview());
+    const acquire = vi.fn().mockResolvedValue(undefined);
+    const provider = fakeProvider(review);
+    await runProviderReviewWithRetry({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      provider: provider as any,
+      root: "/tmp",
+      prompt: "hi",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      options: {} as any,
+      context: QUIET_CONTEXT,
+      featureId: "feat_x",
+      index: 0,
+      total: 1,
+      limiter: { acquire },
+    });
+    expect(review).toHaveBeenCalledTimes(2);
+    expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
   it("does NOT retry on provider-auth", async () => {
     delete process.env["CLAWPATCH_REVIEW_RETRIES"];
     const err = new ClawpatchError("auth", 4, "provider-auth");

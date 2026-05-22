@@ -118,6 +118,7 @@ Supported provider names today:
 - `codex`: local Codex CLI
 - `acpx`: any ACP-compatible coding agent (Codex / Claude / Pi / Gemini / ...) via openclaw/acpx
 - `claude`: local Claude Code CLI in print mode
+- `cursor`: local Cursor Agent CLI (experimental; `doctor` is enabled by default)
 - `grok`: local Grok Build CLI
 - `opencode`: local OpenCode CLI
 - `pi`: local Pi coding agent in print mode

@@ -5,6 +5,7 @@
 - Added `clawpatch ci` to initialize, map, review, write a report, and append a GitHub Actions step summary in one CI-friendly command.
 - Added `clawpatch open-pr --patch <id>` to turn an applied patch attempt into an explicit GitHub pull request.
 - Added a `claude` provider for routing map, review, fix, and revalidate through the local Claude Code CLI in print mode, thanks @aurokin.
+- Added an experimental `cursor` provider for local Cursor Agent CLI review workflows behind explicit opt-in gates, thanks @aurokin.
 - Added review prompt provenance and budget accounting for included files, omitted files, prompt bytes, and approximate tokens.
 - Added retries for transient acpx JSON review failures via `--prompt-retries` and `CLAWPATCH_REVIEW_RETRIES`, thanks @coletebou.
 - Hardened review ingestion so provider findings must cite included files with valid line ranges and matching evidence quotes.

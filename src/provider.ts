@@ -325,6 +325,8 @@ const codexProvider: Provider = {
   },
 };
 
+const CODEX_DEFAULT_TIMEOUT_MS = 300_000;
+
 const opencodeProvider: Provider = {
   name: "opencode",
   async check(root: string): Promise<string> {
@@ -1542,7 +1544,9 @@ async function runCodexJson(
     addCodexSandboxArgs(args, sandbox);
     addCodexModelArgs(args, options);
     args.push("-");
-    const result = await runCommandArgs("codex", args, root, prompt);
+    const result = await runCommandArgs("codex", args, root, prompt, {
+      timeoutMs: codexTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         codexFailureMessage(result.stdout, result.stderr),
@@ -1566,6 +1570,16 @@ function codexFailureMessage(stdout: string, stderr: string): string {
     ? "\nCodex/OpenAI auth is missing Responses API write access (`api.responses.write`). Check the active credentials, organization/project role, and restricted key scopes."
     : "";
   return `codex provider failed: ${output}${scopeAdvice}`;
+}
+
+function codexTimeoutMs(): number {
+  const raw =
+    process.env["CLAWPATCH_CODEX_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
+  if (raw === undefined) {
+    return CODEX_DEFAULT_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : CODEX_DEFAULT_TIMEOUT_MS;
 }
 
 function addCodexSandboxArgs(args: string[], sandbox: string): void {
@@ -2229,6 +2243,7 @@ export const __testing = {
   claudeFailureMessage,
   claudeTimeoutMs,
   codexFailureMessage,
+  codexTimeoutMs,
   cursorAgentArgs,
   cursorEnv,
   cursorFailureMessage,

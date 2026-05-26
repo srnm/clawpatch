@@ -22,6 +22,7 @@ const {
   claudeFailureMessage,
   claudeTimeoutMs,
   codexFailureMessage,
+  codexTimeoutMs,
   cursorAgentArgs,
   cursorEnv,
   cursorFailureMessage,
@@ -221,12 +222,24 @@ describe("parseCodexJson", () => {
 
 describe("Codex provider args", () => {
   const originalCodexSandbox = process.env["CLAWPATCH_CODEX_SANDBOX"];
+  const originalCodexTimeout = process.env["CLAWPATCH_CODEX_TIMEOUT_MS"];
+  const originalProviderTimeout = process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
 
   afterEach(() => {
     if (originalCodexSandbox === undefined) {
       delete process.env["CLAWPATCH_CODEX_SANDBOX"];
     } else {
       process.env["CLAWPATCH_CODEX_SANDBOX"] = originalCodexSandbox;
+    }
+    if (originalCodexTimeout === undefined) {
+      delete process.env["CLAWPATCH_CODEX_TIMEOUT_MS"];
+    } else {
+      process.env["CLAWPATCH_CODEX_TIMEOUT_MS"] = originalCodexTimeout;
+    }
+    if (originalProviderTimeout === undefined) {
+      delete process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
+    } else {
+      process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"] = originalProviderTimeout;
     }
   });
 
@@ -292,6 +305,21 @@ describe("Codex provider args", () => {
     addCodexModelArgs(args, { model: null, reasoningEffort: null, skipGitRepoCheck: false });
 
     expect(args).toEqual(["exec"]);
+  });
+
+  it("uses Codex-specific timeout before generic provider timeout", () => {
+    delete process.env["CLAWPATCH_CODEX_TIMEOUT_MS"];
+    delete process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
+    expect(codexTimeoutMs()).toBe(300_000);
+
+    process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"] = "2000";
+    expect(codexTimeoutMs()).toBe(2000);
+
+    process.env["CLAWPATCH_CODEX_TIMEOUT_MS"] = "3000";
+    expect(codexTimeoutMs()).toBe(3000);
+
+    process.env["CLAWPATCH_CODEX_TIMEOUT_MS"] = "bad";
+    expect(codexTimeoutMs()).toBe(300_000);
   });
 });
 

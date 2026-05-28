@@ -2,6 +2,8 @@
 
 ## 0.4.1 - Unreleased
 
+- Fixed Codex provider calls to time out stalled `codex exec` children and release review locks, thanks @camwest.
+
 ## 0.4.0 - 2026-05-22
 
 - Added `clawpatch ci` to initialize, map, review, write a report, and append a GitHub Actions step summary in one CI-friendly command.

@@ -228,6 +228,64 @@ describe("review prompt provenance", () => {
     expect(bundle.prompt).toContain("PEP 758 permits unparenthesized multiple exception types");
     expect(bundle.prompt).toContain("--- .python-version (context, lines 1-1)");
   });
+
+  it("includes shell fallback output ambiguity guidance in review prompts", async () => {
+    const root = await fixtureRoot("clawpatch-prompt-shell-fallback-");
+    await writeFixture(
+      root,
+      "scripts/check-status.sh",
+      [
+        "#!/usr/bin/env bash",
+        'status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"',
+        'echo "status=$status"',
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      ".github/workflows/status.yml",
+      [
+        "name: status",
+        "jobs:",
+        "  check:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: |",
+        '          some_command || echo "failed"',
+        "",
+      ].join("\n"),
+    );
+    const shellFeature = {
+      ...feature(),
+      title: "Shell/workflow config check-status.sh",
+      summary: "Shell or workflow automation with captured machine-readable output.",
+      kind: "config" as const,
+      source: "shell-workflow-heuristic",
+      ownedFiles: [{ path: "scripts/check-status.sh", reason: "shell workflow automation" }],
+      contextFiles: [
+        { path: ".github/workflows/status.yml", reason: "workflow run-block context" },
+      ],
+      tags: ["config", "shell", "workflow"],
+      trustBoundaries: ["process-exec", "network"] as FeatureRecord["trustBoundaries"],
+    };
+
+    const bundle = await buildReviewPromptBundle(
+      root,
+      project(root, ["shell", "yaml"]),
+      shellFeature,
+      defaultConfig(),
+    );
+
+    expect(bundle.prompt).toContain("Shell and workflow review:");
+    expect(bundle.prompt).toContain(
+      'status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"',
+    );
+    expect(bundle.prompt).toContain("404000");
+    expect(bundle.prompt).toContain('some_command || echo "failed"');
+    expect(bundle.prompt).toContain('if ! status="$(cmd)"; then status="fallback"; fi');
+    expect(bundle.prompt).toContain("--- scripts/check-status.sh (owned");
+    expect(bundle.prompt).toContain("--- .github/workflows/status.yml (context");
+  });
 });
 
 function project(root: string, languages: string[] = ["typescript"]): ProjectRecord {

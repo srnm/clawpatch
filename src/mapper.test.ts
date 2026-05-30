@@ -90,6 +90,34 @@ describe("mapFeatures", () => {
       "app/fixtures/page.tsx",
       "export default function FixturesPage() { return null; }\n",
     );
+    await writeFixture(
+      root,
+      "scripts/check-status.sh",
+      'status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"\n',
+    );
+    await writeFixture(
+      root,
+      "bin/check-status",
+      [
+        "#!/usr/bin/env bash",
+        'status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"',
+        "",
+      ].join("\n"),
+    );
+    await writeFixture(
+      root,
+      ".github/workflows/status.yml",
+      [
+        "name: status",
+        "jobs:",
+        "  check:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: |",
+        '          status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"',
+        "",
+      ].join("\n"),
+    );
 
     const project = await detectProject(root);
     const result = await mapFeatures(root, project, []);
@@ -102,6 +130,17 @@ describe("mapFeatures", () => {
     expect(titles).toContain("Route /users/:id");
     expect(titles).toContain("Route /target");
     expect(titles).toContain("Route /fixtures");
+    expect(titles).toContain("Shell/workflow config check-status");
+    expect(titles).toContain("Shell/workflow config check-status.sh");
+    expect(titles).toContain("Shell/workflow config status.yml");
+    expect(
+      result.features.find((feature) => feature.title === "Shell/workflow config check-status.sh"),
+    ).toMatchObject({
+      source: "shell-workflow-heuristic",
+      tags: expect.arrayContaining(["config", "shell", "workflow"]),
+      trustBoundaries: expect.arrayContaining(["process-exec", "network"]),
+      ownedFiles: [{ path: "scripts/check-status.sh", reason: expect.any(String) }],
+    });
     expect(
       result.features.find((feature) => feature.title === "CLI command fixture")?.tests,
     ).toEqual([]);

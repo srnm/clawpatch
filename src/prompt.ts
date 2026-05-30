@@ -205,6 +205,12 @@ ${customBlock}Review categories:
 - release/build hazards
 - maintainability risks with concrete impact
 
+Shell and workflow review:
+- Treat shell files, YAML run blocks, subprocess strings, and Markdown recipes as process-exec code when included.
+- Flag captured machine-readable shell output where a stdout-producing command is mixed with fallback output on the same stream, such as status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" || echo 000)"; this can concatenate values like 404000.
+- Focus this rule on captured or parsed values, not human-facing logging fallbacks like some_command || echo "failed".
+- Recommend separating the primary command capture from fallback assignment, for example if ! status="$(cmd)"; then status="fallback"; fi.
+
 ${reviewModeInstructions(mode)}
 
 ${languageGuidance}

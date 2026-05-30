@@ -81,10 +81,14 @@ const sourceExtensions = new Set([
   ".py",
   ".rb",
   ".rs",
+  ".bash",
+  ".sh",
   ".swift",
   ".ts",
   ".tsx",
   ".vb",
+  ".yaml",
+  ".yml",
 ]);
 
 const manifestNames = new Set([

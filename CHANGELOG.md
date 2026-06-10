@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1 - Unreleased
+## 0.5.1 - 2026-06-10
 
 - Added opt-in npm registry verification that drops only matching single-package, whole-title-and-reasoning public-npm publication claims when the exact version is confirmed published, thanks @coletebou.
 - Fixed revalidation to include linked patch attempts, validation results, feature context, and current relevant files so repaired findings can move out of `uncertain`.

@@ -8,19 +8,11 @@ description: "No-publish checks for preparing a clawpatch release"
 This checklist audits release readiness only. It does not publish, tag, create a
 GitHub release, or change the package version.
 
-## Current Snapshot
+## Release Snapshot
 
-As of 2026-05-22:
-
-- GitHub latest full release: `v0.4.0`
-- `package.json` version: `0.4.0`
-- npm `clawpatch` version: `0.4.0`
-- `pnpm pack:smoke` passed
-- `npm pack --dry-run --json --ignore-scripts` included expected package
-  contents such as `dist/`, `README.md`, `LICENSE`, and `package.json`
-
-Prepare the next release only after the maintainer confirms the target version
-and timing.
+Record the target version, current npm version, release commit, local validation,
+and CI URLs in the GitHub release notes. Verify the target version is absent from
+npm, Git tags, and GitHub releases before publishing.
 
 ## Audit Commands
 
@@ -28,6 +20,8 @@ and timing.
 gh release list --repo openclaw/clawpatch --limit 20 --json tagName,isPrerelease,isDraft,publishedAt,isLatest
 node -p "require('./package.json').version"
 npm view clawpatch version --json
+git tag --list "vX.Y.Z"
+gh release view "vX.Y.Z" --repo openclaw/clawpatch
 ```
 
 ## Validation Commands
@@ -50,5 +44,7 @@ npm pack --dry-run --json --ignore-scripts
   constraints.
 - Confirm the dry-run package includes built `dist/` files and excludes local
   state, fixtures that should not ship, and private paths.
+- Publish npm and verify its version, `latest` tag, tarball, integrity, and
+  timestamp before creating the GitHub release.
 - Confirm no release action has been run unless release timing is explicitly
   approved.

@@ -15,8 +15,11 @@
 /.crabbox.yaml @openclaw/openclaw-secops
 
 # Package integrity surfaces.
+/CHANGELOG.md @openclaw/openclaw-secops
 /package.json @openclaw/openclaw-secops
 /pnpm-lock.yaml @openclaw/openclaw-secops
+/scripts/ @openclaw/openclaw-secops
+/docs/release-prep.md @openclaw/openclaw-secops
 
 # Provider execution, prompt construction, config, and patch workflow surfaces.
 /src/exec.ts @openclaw/openclaw-secops

@@ -3,29 +3,37 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const moduleRequire = createRequire(import.meta.url);
 const root = process.cwd();
-const tmp = mkdtempSync(join(tmpdir(), "clawpatch-pack-smoke-"));
-const fixtureRoot = join(tmp, "fixture");
-const installRoot = join(tmp, "installed");
-const npmCache = join(tmp, "npm-cache");
 
-function write(path, contents) {
-  const full = join(fixtureRoot, path);
+function createSmokeContext() {
+  const tmp = mkdtempSync(join(tmpdir(), "clawpatch-pack-smoke-"));
+  return {
+    root,
+    tmp,
+    fixtureRoot: join(tmp, "fixture"),
+    installRoot: join(tmp, "installed"),
+    npmCache: join(tmp, "npm-cache"),
+  };
+}
+
+function write(context, path, contents) {
+  const full = join(context.fixtureRoot, path);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, contents, "utf8");
 }
 
-function run(command, args, options = {}) {
+function run(context, command, args, options = {}) {
   return execFileSync(command, args, {
-    cwd: options.cwd ?? root,
+    cwd: options.cwd ?? context.root,
     encoding: "utf8",
     env: {
       ...process.env,
-      NPM_CONFIG_CACHE: npmCache,
-      npm_config_cache: npmCache,
+      NPM_CONFIG_CACHE: context.npmCache,
+      npm_config_cache: context.npmCache,
       npm_config_update_notifier: "false",
     },
     shell: needsWindowsShell(command) ? (process.env.ComSpec ?? true) : false,
@@ -39,8 +47,18 @@ function needsWindowsShell(command) {
   );
 }
 
-try {
+export function main() {
+  const context = createSmokeContext();
+  try {
+    runSmoke(context);
+  } finally {
+    rmSync(context.tmp, { recursive: true, force: true });
+  }
+}
+
+function runSmoke(context) {
   write(
+    context,
     "pyproject.toml",
     [
       "[project]",
@@ -52,8 +70,9 @@ try {
       "",
     ].join("\n"),
   );
-  write("app/__init__.py", "");
+  write(context, "app/__init__.py", "");
   write(
+    context,
     "app/main.py",
     [
       "from fastapi import FastAPI",
@@ -66,9 +85,10 @@ try {
       "",
     ].join("\n"),
   );
-  write("tests/test_ingest.py", "def test_ingest() -> None:\n    assert True\n");
-  write("pnpm-workspace.yaml", ["packages:", "  - frontend", ""].join("\n"));
+  write(context, "tests/test_ingest.py", "def test_ingest() -> None:\n    assert True\n");
+  write(context, "pnpm-workspace.yaml", ["packages:", "  - frontend", ""].join("\n"));
   write(
+    context,
     "frontend/package.json",
     JSON.stringify(
       {
@@ -80,9 +100,14 @@ try {
       2,
     ),
   );
-  write("frontend/src/app/dashboard/page.tsx", "export default function Page() { return null; }\n");
-  write("frontend/src/app/dashboard/page.test.tsx", "test('dashboard', () => {});\n");
   write(
+    context,
+    "frontend/src/app/dashboard/page.tsx",
+    "export default function Page() { return null; }\n",
+  );
+  write(context, "frontend/src/app/dashboard/page.test.tsx", "test('dashboard', () => {});\n");
+  write(
+    context,
     "CMakeLists.txt",
     [
       "cmake_minimum_required(VERSION 3.18)",
@@ -95,10 +120,15 @@ try {
       "",
     ].join("\n"),
   );
-  write("configure.ac", "AC_INIT([cuda-smoke], [0.1])\nAC_OUTPUT\n");
-  write("src/main.cpp", '#include "vector_add.cuh"\nint main() { return launch_vector_add(); }\n');
-  write("include/vector_add.cuh", "#pragma once\nint launch_vector_add();\n");
+  write(context, "configure.ac", "AC_INIT([cuda-smoke], [0.1])\nAC_OUTPUT\n");
   write(
+    context,
+    "src/main.cpp",
+    '#include "vector_add.cuh"\nint main() { return launch_vector_add(); }\n',
+  );
+  write(context, "include/vector_add.cuh", "#pragma once\nint launch_vector_add();\n");
+  write(
+    context,
     "kernels/vector_add.cu",
     [
       '#include "vector_add.cuh"',
@@ -107,38 +137,43 @@ try {
       "",
     ].join("\n"),
   );
-  write("kernels/legacy.cu", "__global__ void legacy_kernel() {}\n");
+  write(context, "kernels/legacy.cu", "__global__ void legacy_kernel() {}\n");
 
   const packOutput = JSON.parse(
-    run("npm", ["pack", "--json", "--cache", npmCache, "--pack-destination", tmp], {
-      stdio: "pipe",
+    run(
+      context,
+      "npm",
+      ["pack", "--json", "--cache", context.npmCache, "--pack-destination", context.tmp],
+      {
+        stdio: "pipe",
+      },
+    ),
+  );
+  const tarball = packPath(context.tmp, packOutput);
+  const dependencyTarballs = runtimeDependencyTarballs(context);
+  mkdirSync(context.installRoot, { recursive: true });
+  run(
+    context,
+    "npm",
+    installArgs({
+      installRoot: context.installRoot,
+      npmCache: context.npmCache,
+      tarball,
+      dependencyTarballs,
     }),
   );
-  const tarball = join(tmp, packFilename(packOutput));
-  const dependencyPaths = runtimeDependencyPaths();
-  mkdirSync(installRoot, { recursive: true });
-  run("npm", [
-    "install",
-    "--offline",
-    "--omit=dev",
-    "--cache",
-    npmCache,
-    "--prefix",
-    installRoot,
-    tarball,
-    ...dependencyPaths,
-  ]);
+  verifyRuntimeDependencies(context);
 
   const bin = join(
-    installRoot,
+    context.installRoot,
     "node_modules",
     ".bin",
     process.platform === "win32" ? "clawpatch.cmd" : "clawpatch",
   );
-  run(bin, ["--root", fixtureRoot, "init", "--force", "--json"]);
-  const mapped = JSON.parse(run(bin, ["--root", fixtureRoot, "map", "--json"]));
+  run(context, bin, ["--root", context.fixtureRoot, "init", "--force", "--json"]);
+  const mapped = JSON.parse(run(context, bin, ["--root", context.fixtureRoot, "map", "--json"]));
   const features = JSON.parse(
-    run("node", [
+    run(context, "node", [
       "-e",
       [
         "const { readdirSync, readFileSync } = require('node:fs');",
@@ -146,7 +181,7 @@ try {
         "const dir = join(process.argv[1], '.clawpatch', 'features');",
         "console.log(JSON.stringify(readdirSync(dir).map((file) => JSON.parse(readFileSync(join(dir, file), 'utf8')))));",
       ].join(""),
-      fixtureRoot,
+      context.fixtureRoot,
     ]),
   );
   const sources = new Set(features.map((feature) => feature.source));
@@ -195,21 +230,99 @@ try {
   console.log(
     `packaged CLI smoke mapped ${mapped.features} features (${cudaFeatures.length} CUDA)`,
   );
-} finally {
-  rmSync(tmp, { recursive: true, force: true });
 }
-
 function packFilename(output) {
-  const filename = Array.isArray(output) ? output[0]?.filename : null;
+  const filename = Array.isArray(output) ? output[0]?.filename : output?.filename;
   if (typeof filename !== "string" || filename.length === 0) {
     throw new Error("npm pack did not report a tarball filename");
   }
   return filename;
 }
 
-function runtimeDependencyPaths() {
-  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  return Object.keys(packageJson.dependencies ?? {}).map((name) =>
+function packPath(destination, output) {
+  const filename = packFilename(output);
+  return isAbsolute(filename) ? filename : join(destination, filename);
+}
+
+function runtimeDependencyPaths(rootPath = root) {
+  const packageJson = JSON.parse(readFileSync(join(rootPath, "package.json"), "utf8"));
+  return runtimeDependencyNames(packageJson).map((name) =>
     dirname(moduleRequire.resolve(`${name}/package.json`)),
   );
 }
+
+function runtimeDependencyNames(packageJson) {
+  return Object.keys(packageJson.dependencies ?? {});
+}
+
+function runtimeDependencyTarballs(context) {
+  return runtimeDependencyPaths(context.root).map((dependencyPath) =>
+    packDependency(context, dependencyPath),
+  );
+}
+
+function packDependency(context, dependencyPath) {
+  const packOutput = JSON.parse(
+    run(
+      context,
+      "pnpm",
+      packDependencyArgs({
+        dependencyPath,
+        destination: context.tmp,
+      }),
+      {
+        stdio: "pipe",
+      },
+    ),
+  );
+  return packPath(context.tmp, packOutput);
+}
+
+function packDependencyArgs({ dependencyPath, destination }) {
+  return [
+    "--dir",
+    dependencyPath,
+    "--config.ignore-scripts=true",
+    "pack",
+    "--json",
+    "--pack-destination",
+    destination,
+  ];
+}
+
+function installArgs({ installRoot, npmCache, tarball, dependencyTarballs }) {
+  return [
+    "install",
+    "--offline",
+    "--omit=dev",
+    "--cache",
+    npmCache,
+    "--prefix",
+    installRoot,
+    tarball,
+    ...dependencyTarballs,
+  ];
+}
+
+function verifyRuntimeDependencies(context) {
+  const packageJson = JSON.parse(readFileSync(join(context.root, "package.json"), "utf8"));
+  const packageRoot = join(context.installRoot, "node_modules", packageJson.name);
+  for (const name of runtimeDependencyNames(packageJson)) {
+    run(context, "node", [
+      "-e",
+      "require.resolve(`${process.argv[1]}/package.json`, { paths: [process.argv[2]] })",
+      name,
+      packageRoot,
+    ]);
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main();
+}
+
+export const packageSmokeTestHooks = {
+  installArgs,
+  packDependencyArgs,
+  runtimeDependencyNames,
+};

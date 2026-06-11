@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.6.1 - Unreleased
+
 ## 0.6.0 - 2026-06-11
 
 - Added trusted Codex CLI config passthrough for explicit config files while rejecting repository-controlled passthrough config, thanks @brad-ai-agent.

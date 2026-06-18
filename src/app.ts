@@ -7,6 +7,7 @@ import {
   sourceChangedSnapshots,
 } from "./change-audit.js";
 import { loadConfig, parseReasoningEffort, resolveStateDir } from "./config.js";
+import { applyProviderFlags, newRun, providerOptions, stringFlag } from "./command-support.js";
 import { loadProjectState, type AppContext } from "./app-context.js";
 import { detectProject } from "./detect.js";
 import { ClawpatchError, assertDefined } from "./errors.js";
@@ -1249,33 +1250,6 @@ async function ensureInitialized(context: AppContext): Promise<boolean> {
   return true;
 }
 
-function applyProviderFlags(
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  flags: Record<string, string | boolean>,
-) {
-  const providerName = stringFlag(flags, "provider");
-  const model = stringFlag(flags, "model");
-  const reasoningEffort = parseReasoningEffort(stringFlag(flags, "reasoningEffort"));
-  return {
-    ...config,
-    provider: {
-      ...config.provider,
-      name: providerName ?? config.provider.name,
-      model: model ?? config.provider.model,
-      reasoningEffort: reasoningEffort ?? config.provider.reasoningEffort,
-      skipGitRepoCheck: flags["skipGitRepoCheck"] === true,
-    },
-    registryVerifier: {
-      ...config.registryVerifier,
-      // CLI flag is one-way: --no-registry-verify forces off, but absence
-      // of the flag preserves whatever config.json says. This matches the
-      // negative-flag convention (`--no-color`, `--no-input`) used
-      // elsewhere in the CLI surface.
-      enabled: flags["noRegistryVerify"] === true ? false : config.registryVerifier.enabled,
-    },
-  };
-}
-
 function providerFlagSubset(
   flags: Record<string, string | boolean>,
 ): Record<string, string | boolean> {
@@ -1369,15 +1343,6 @@ function reviewAnalysisSummary(findings: number, manifest: ReviewPromptManifest)
     `includedFiles=${manifest.includedFiles.length}`,
     `omittedFiles=${manifest.omittedFiles.length}`,
   ].join("; ");
-}
-
-function providerOptions(config: ReturnType<typeof applyProviderFlags>) {
-  return {
-    model: config.provider.model,
-    reasoningEffort: config.provider.reasoningEffort,
-    codexConfig: config.provider.codexConfig,
-    skipGitRepoCheck: config.provider.skipGitRepoCheck,
-  };
 }
 
 function parseMapSource(flags: Record<string, string | boolean>): "heuristic" | "auto" | "agent" {
@@ -1625,30 +1590,6 @@ function featureLock(currentRunId: string): NonNullable<FeatureRecord["lock"]> {
   };
 }
 
-function newRun(
-  id: string,
-  command: string,
-  context: AppContext,
-  root: string,
-  headSha: string | null,
-): RunRecord {
-  return {
-    schemaVersion: 1,
-    runId: id,
-    command,
-    args: process.argv.slice(2),
-    rootPath: root,
-    headSha,
-    startedAt: nowIso(),
-    finishedAt: null,
-    status: "running",
-    claimedFeatureIds: [],
-    findingIds: [],
-    patchAttemptIds: [],
-    errors: [],
-  };
-}
-
 async function writeMarkdownReport(
   reportDir: string,
   id: string,
@@ -1658,11 +1599,6 @@ async function writeMarkdownReport(
   const path = join(reportDir, `${id}.md`);
   await writeFile(path, renderReport(findings, features), "utf8");
   return path;
-}
-
-function stringFlag(flags: Record<string, string | boolean>, name: string): string | undefined {
-  const value = flags[name];
-  return typeof value === "string" ? value : undefined;
 }
 
 // eslint-disable-next-line no-underscore-dangle

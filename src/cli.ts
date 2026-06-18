@@ -44,38 +44,10 @@ async function dispatch(
   command: string,
   flags: Record<string, string | boolean>,
 ): Promise<unknown> {
-  switch (command) {
-    case "init":
-      return initCommand(context, flags);
-    case "map":
-      return mapCommand(context, flags);
-    case "status":
-      return statusCommand(context);
-    case "review":
-      return reviewCommand(context, flags);
-    case "ci":
-      return ciCommand(context, flags);
-    case "report":
-      return reportCommand(context, flags);
-    case "show":
-      return showCommand(context, flags);
-    case "next":
-      return nextCommand(context, flags);
-    case "triage":
-      return triageCommand(context, flags);
-    case "fix":
-      return fixCommand(context, flags);
-    case "open-pr":
-      return openPrCommand(context, flags);
-    case "revalidate":
-      return revalidateCommand(context, flags);
-    case "doctor":
-      return doctorCommand(context, flags);
-    case "clean-locks":
-      return cleanLocksCommand(context);
-    default:
-      throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
+  if (!isKnownCommand(command)) {
+    throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
   }
+  return commandSpecs[command].run(context, flags);
 }
 
 type ParsedArgs = {
@@ -144,74 +116,105 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, flags, global, help: false, version: false };
 }
 
-const commandFlags = {
-  init: new Set(["force"]),
-  map: new Set(["dryRun", "source", "provider", "model", "reasoningEffort", "skipGitRepoCheck"]),
-  status: new Set<string>(),
-  review: new Set([
-    "feature",
-    "featureList",
-    "project",
-    "limit",
-    "since",
-    "jobs",
-    "mode",
-    "rateLimitPerMinute",
-    "provider",
-    "model",
-    "reasoningEffort",
-    "skipGitRepoCheck",
-    "dryRun",
-    "promptFile",
-    "exportTribunalLedger",
-    "includeDirty",
-    "noRegistryVerify",
-  ]),
-  ci: new Set([
-    "limit",
-    "since",
-    "jobs",
-    "rateLimitPerMinute",
-    "provider",
-    "model",
-    "reasoningEffort",
-    "skipGitRepoCheck",
-    "output",
-    "includeDirty",
-    "noRegistryVerify",
-  ]),
-  report: new Set(["status", "severity", "feature", "project", "category", "triage", "output"]),
-  show: new Set(["finding"]),
-  next: new Set(["status", "project"]),
-  triage: new Set(["finding", "status", "note"]),
-  fix: new Set(["finding", "provider", "model", "reasoningEffort", "skipGitRepoCheck", "dryRun"]),
-  "open-pr": new Set(["patch", "base", "branch", "title", "draft", "dryRun", "force"]),
-  revalidate: new Set([
-    "finding",
-    "all",
-    "status",
-    "severity",
-    "feature",
-    "category",
-    "triage",
-    "limit",
-    "since",
-    "provider",
-    "model",
-    "reasoningEffort",
-    "skipGitRepoCheck",
-    "includeDirty",
-  ]),
-  doctor: new Set(["provider", "model", "reasoningEffort"]),
-  "clean-locks": new Set<string>(),
-} satisfies Record<string, Set<string>>;
-
-const requiredCommandFlags: Partial<Record<keyof typeof commandFlags, string[]>> = {
-  show: ["finding"],
-  triage: ["finding", "status"],
-  fix: ["finding"],
-  "open-pr": ["patch"],
+type Flags = Record<string, string | boolean>;
+type CommandContext = Awaited<ReturnType<typeof makeContext>>;
+type CommandSpec = {
+  flags: readonly string[];
+  required?: readonly string[];
+  validate?: (flags: Flags) => void;
+  run: (context: CommandContext, flags: Flags) => Promise<unknown>;
 };
+
+const commandSpecs = {
+  init: { flags: ["force"], run: initCommand },
+  map: {
+    flags: ["dryRun", "source", "provider", "model", "reasoningEffort", "skipGitRepoCheck"],
+    run: mapCommand,
+  },
+  status: { flags: [], run: statusCommand },
+  review: {
+    flags: [
+      "feature",
+      "featureList",
+      "project",
+      "limit",
+      "since",
+      "jobs",
+      "mode",
+      "rateLimitPerMinute",
+      "provider",
+      "model",
+      "reasoningEffort",
+      "skipGitRepoCheck",
+      "dryRun",
+      "promptFile",
+      "exportTribunalLedger",
+      "includeDirty",
+      "noRegistryVerify",
+    ],
+    validate: validateReviewFlags,
+    run: reviewCommand,
+  },
+  ci: {
+    flags: [
+      "limit",
+      "since",
+      "jobs",
+      "rateLimitPerMinute",
+      "provider",
+      "model",
+      "reasoningEffort",
+      "skipGitRepoCheck",
+      "output",
+      "includeDirty",
+      "noRegistryVerify",
+    ],
+    run: ciCommand,
+  },
+  report: {
+    flags: ["status", "severity", "feature", "project", "category", "triage", "output"],
+    run: reportCommand,
+  },
+  show: { flags: ["finding"], required: ["finding"], run: showCommand },
+  next: { flags: ["status", "project"], run: nextCommand },
+  triage: {
+    flags: ["finding", "status", "note"],
+    required: ["finding", "status"],
+    run: triageCommand,
+  },
+  fix: {
+    flags: ["finding", "provider", "model", "reasoningEffort", "skipGitRepoCheck", "dryRun"],
+    required: ["finding"],
+    run: fixCommand,
+  },
+  "open-pr": {
+    flags: ["patch", "base", "branch", "title", "draft", "dryRun", "force"],
+    required: ["patch"],
+    run: openPrCommand,
+  },
+  revalidate: {
+    flags: [
+      "finding",
+      "all",
+      "status",
+      "severity",
+      "feature",
+      "category",
+      "triage",
+      "limit",
+      "since",
+      "provider",
+      "model",
+      "reasoningEffort",
+      "skipGitRepoCheck",
+      "includeDirty",
+    ],
+    validate: validateRevalidateFlags,
+    run: revalidateCommand,
+  },
+  doctor: { flags: ["provider", "model", "reasoningEffort"], run: doctorCommand },
+  "clean-locks": { flags: [], run: cleanLocksCommand },
+} satisfies Record<string, CommandSpec>;
 
 type OptionSpec = {
   name: string;
@@ -297,7 +300,7 @@ function validateCommandFlags(command: string, flags: Record<string, string | bo
   if (!isKnownCommand(command)) {
     throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
   }
-  const allowed = commandFlags[command];
+  const allowed = new Set(commandSpecs[command].flags);
   for (const flag of Object.keys(flags)) {
     if (!allowed.has(flag)) {
       throw new ClawpatchError(
@@ -316,14 +319,18 @@ function validateCommandRequirements(
   if (!isKnownCommand(command)) {
     throw new ClawpatchError(`unknown command: ${command}`, 2, "invalid-usage");
   }
-  const required = requiredCommandFlags[command] ?? [];
+  const spec: CommandSpec = commandSpecs[command];
+  const required = spec.required ?? [];
   for (const flag of required) {
     if (typeof flags[flag] !== "string" || flags[flag].length === 0) {
       throw new ClawpatchError(`missing --${kebab(flag)}`, 2, "invalid-usage");
     }
   }
+  spec.validate?.(flags);
+}
+
+function validateRevalidateFlags(flags: Flags): void {
   if (
-    command === "revalidate" &&
     typeof flags["finding"] !== "string" &&
     flags["all"] !== true &&
     typeof flags["since"] !== "string" &&
@@ -331,15 +338,17 @@ function validateCommandRequirements(
   ) {
     throw new ClawpatchError("missing --finding or --all", 2, "invalid-usage");
   }
+}
+
+function validateReviewFlags(flags: Flags): void {
   if (
-    command === "review" &&
     typeof flags["mode"] === "string" &&
     flags["mode"] !== "default" &&
     flags["mode"] !== "deslopify"
   ) {
     throw new ClawpatchError("invalid --mode; expected default or deslopify", 2, "invalid-usage");
   }
-  if (command === "review" && typeof flags["featureList"] === "string") {
+  if (typeof flags["featureList"] === "string") {
     for (const conflictingFlag of ["feature", "project", "since"] as const) {
       if (typeof flags[conflictingFlag] === "string") {
         throw new ClawpatchError(
@@ -359,8 +368,8 @@ function validateCommandRequirements(
   }
 }
 
-function isKnownCommand(command: string): command is keyof typeof commandFlags {
-  return Object.hasOwn(commandFlags, command);
+function isKnownCommand(command: string): command is keyof typeof commandSpecs {
+  return Object.hasOwn(commandSpecs, command);
 }
 
 function readFlagValue(argv: string[], index: number, flag: string): string {

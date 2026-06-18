@@ -14,13 +14,11 @@ export function parseGitStatus(output: string): GitStatusChange[] {
       continue;
     }
     const status = field.slice(0, 2);
-    const primaryPath = normalizeGitPath(field.slice(3));
+    const primaryPath = field.slice(3);
     if (primaryPath.length === 0) {
       continue;
     }
-    const secondaryPath = /[RC]/u.test(status)
-      ? normalizeGitPath(fields[index + 1] ?? "")
-      : undefined;
+    const secondaryPath = /[RC]/u.test(status) ? (fields[index + 1] ?? "") : undefined;
     if (secondaryPath !== undefined) {
       index += 1;
     }
@@ -35,8 +33,4 @@ export function parseGitStatus(output: string): GitStatusChange[] {
     });
   }
   return changes;
-}
-
-function normalizeGitPath(path: string): string {
-  return path.replace(/\\/gu, "/");
 }

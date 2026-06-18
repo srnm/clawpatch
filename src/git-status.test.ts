@@ -21,9 +21,9 @@ describe("parseGitStatus", () => {
     expect(parseGitStatus("R  new\\name.ts\0old name.ts\0")).toEqual([
       {
         status: "R ",
-        primaryPath: "new/name.ts",
+        primaryPath: "new\\name.ts",
         secondaryPath: "old name.ts",
-        paths: ["new/name.ts", "old name.ts"],
+        paths: ["new\\name.ts", "old name.ts"],
       },
     ]);
   });

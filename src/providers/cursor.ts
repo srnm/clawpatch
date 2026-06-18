@@ -6,6 +6,7 @@ import { ClawpatchError } from "../errors.js";
 import { providerExitCode } from "../provider-errors.js";
 import { extractJson, safeProviderPreview } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -284,13 +285,7 @@ function assertCursorWriteEnabled(): void {
 }
 
 function cursorTimeoutMs(): number {
-  const raw =
-    process.env["CLAWPATCH_CURSOR_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
-  if (raw === undefined) {
-    return CURSOR_DEFAULT_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : CURSOR_DEFAULT_TIMEOUT_MS;
+  return providerTimeoutMs("CLAWPATCH_CURSOR_TIMEOUT_MS", CURSOR_DEFAULT_TIMEOUT_MS);
 }
 
 function cursorEnv(): NodeJS.ProcessEnv {

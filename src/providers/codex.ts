@@ -6,6 +6,7 @@ import { ClawpatchError } from "../errors.js";
 import { providerExitCode } from "../provider-errors.js";
 import { parseCodexJson } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerCheckTimeoutMs, providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -26,7 +27,9 @@ import {
 export const codexProvider: Provider = {
   name: "codex",
   async check(root: string): Promise<string> {
-    const result = await runCommandArgs("codex", ["--version"], root);
+    const result = await runCommandArgs("codex", ["--version"], root, undefined, {
+      timeoutMs: providerCheckTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError("codex CLI not available", 4, "provider-auth");
     }
@@ -112,13 +115,7 @@ function codexFailureMessage(stdout: string, stderr: string): string {
 }
 
 function codexTimeoutMs(): number {
-  const raw =
-    process.env["CLAWPATCH_CODEX_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
-  if (raw === undefined) {
-    return CODEX_DEFAULT_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : CODEX_DEFAULT_TIMEOUT_MS;
+  return providerTimeoutMs("CLAWPATCH_CODEX_TIMEOUT_MS", CODEX_DEFAULT_TIMEOUT_MS);
 }
 
 function addCodexSandboxArgs(args: string[], sandbox: string): void {

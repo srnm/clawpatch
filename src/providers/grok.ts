@@ -6,6 +6,7 @@ import { ClawpatchError } from "../errors.js";
 import { providerExitCode } from "../provider-errors.js";
 import { extractJson } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerCheckTimeoutMs, providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -25,7 +26,9 @@ import {
 export const grokProvider: Provider = {
   name: "grok",
   async check(root: string): Promise<string> {
-    const result = await runCommandArgs("grok", ["--version"], root);
+    const result = await runCommandArgs("grok", ["--version"], root, undefined, {
+      timeoutMs: providerCheckTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError("grok CLI not available", 4, "provider-auth");
     }
@@ -66,9 +69,8 @@ async function runGrokJson(
 ): Promise<unknown> {
   const dir = await mkdtemp(join(tmpdir(), "clawpatch-grok-"));
   const promptPath = join(dir, "prompt.txt");
-  await writeFile(promptPath, grokPrompt(prompt, schema), "utf8");
-
   try {
+    await writeFile(promptPath, grokPrompt(prompt, schema), "utf8");
     const args = [
       "--prompt-file",
       promptPath,
@@ -85,7 +87,10 @@ async function runGrokJson(
     if (readOnly) {
       args.push("--disallowed-tools", "search_replace,run_terminal_cmd,Agent");
     }
-    const result = await runCommandArgs("grok", args, root, undefined, { trimOutput: false });
+    const result = await runCommandArgs("grok", args, root, undefined, {
+      trimOutput: false,
+      timeoutMs: providerTimeoutMs("CLAWPATCH_GROK_TIMEOUT_MS", 300_000),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         `grok provider failed: ${result.stderr || result.stdout}`,

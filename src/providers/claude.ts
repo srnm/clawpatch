@@ -5,6 +5,7 @@ import { runCommandArgs } from "../exec.js";
 import { ClawpatchError } from "../errors.js";
 import { safeProviderPreview } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -456,13 +457,7 @@ function parseClaudeVersion(raw: string): [number, number, number] | null {
 }
 
 function claudeTimeoutMs(): number {
-  const raw =
-    process.env["CLAWPATCH_CLAUDE_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
-  if (raw === undefined) {
-    return CLAUDE_DEFAULT_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : CLAUDE_DEFAULT_TIMEOUT_MS;
+  return providerTimeoutMs("CLAWPATCH_CLAUDE_TIMEOUT_MS", CLAUDE_DEFAULT_TIMEOUT_MS);
 }
 
 export const claudeTesting = {

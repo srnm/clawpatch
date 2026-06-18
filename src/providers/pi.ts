@@ -6,6 +6,7 @@ import { ClawpatchError } from "../errors.js";
 import { providerExitCode } from "../provider-errors.js";
 import { extractJson, safeProviderPreview } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerCheckTimeoutMs, providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -28,7 +29,9 @@ const PI_DEFAULT_TIMEOUT_MS = 180_000;
 export const piProvider: Provider = {
   name: "pi",
   async check(root: string): Promise<string> {
-    const result = await runCommandArgs("pi", ["--version"], root);
+    const result = await runCommandArgs("pi", ["--version"], root, undefined, {
+      timeoutMs: providerCheckTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError("pi CLI not available", 4, "provider-auth");
     }
@@ -146,13 +149,7 @@ function piThinkingLevel(reasoningEffort: ReasoningEffort): string {
 }
 
 function piTimeoutMs(): number {
-  const raw =
-    process.env["CLAWPATCH_PI_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
-  if (raw === undefined) {
-    return PI_DEFAULT_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : PI_DEFAULT_TIMEOUT_MS;
+  return providerTimeoutMs("CLAWPATCH_PI_TIMEOUT_MS", PI_DEFAULT_TIMEOUT_MS);
 }
 
 export const piTesting = { piThinkingLevel };

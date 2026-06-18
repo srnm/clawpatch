@@ -6,6 +6,7 @@ import { ClawpatchError } from "../errors.js";
 import { providerExitCode } from "../provider-errors.js";
 import { extractJson, safeProviderPreview } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerCheckTimeoutMs, providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -25,7 +26,9 @@ import {
 export const opencodeProvider: Provider = {
   name: "opencode",
   async check(root: string): Promise<string> {
-    const result = await runCommandArgs("opencode", ["--version"], root);
+    const result = await runCommandArgs("opencode", ["--version"], root, undefined, {
+      timeoutMs: providerCheckTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError("opencode CLI not available", 4, "provider-auth");
     }
@@ -74,9 +77,8 @@ async function runOpencodeJson(
 ): Promise<unknown> {
   const dir = await mkdtemp(join(tmpdir(), "clawpatch-opencode-"));
   const promptPath = join(dir, "prompt.txt");
-  await writeFile(promptPath, opencodePrompt(prompt, schema, readOnly), "utf8");
-
   try {
+    await writeFile(promptPath, opencodePrompt(prompt, schema, readOnly), "utf8");
     const args = [
       "run",
       "Follow the attached clawpatch prompt. Return only the requested JSON object.",
@@ -98,8 +100,15 @@ async function runOpencodeJson(
       root,
       undefined,
       readOnly
-        ? { trimOutput: false, env: { OPENCODE_PERMISSION: OPENCODE_READ_ONLY_PERMISSION } }
-        : { trimOutput: false },
+        ? {
+            trimOutput: false,
+            env: { OPENCODE_PERMISSION: OPENCODE_READ_ONLY_PERMISSION },
+            timeoutMs: providerTimeoutMs("CLAWPATCH_OPENCODE_TIMEOUT_MS", 300_000),
+          }
+        : {
+            trimOutput: false,
+            timeoutMs: providerTimeoutMs("CLAWPATCH_OPENCODE_TIMEOUT_MS", 300_000),
+          },
     );
     if (result.exitCode !== 0) {
       throw new ClawpatchError(

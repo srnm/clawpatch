@@ -2,6 +2,7 @@ import { runCommandArgs } from "../exec.js";
 import { ClawpatchError } from "../errors.js";
 import { extractJson, safeProviderPreview } from "../provider-json.js";
 import { parseOrThrow, parseReviewOutput } from "../provider-output.js";
+import { providerCheckTimeoutMs, providerTimeoutMs } from "../provider-runtime.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -24,7 +25,9 @@ const ACPX_DEFAULT_TIMEOUT_MS = 180_000;
 export const acpxProvider: Provider = {
   name: "acpx",
   async check(root: string): Promise<string> {
-    const result = await runCommandArgs("acpx", ["--version"], root);
+    const result = await runCommandArgs("acpx", ["--version"], root, undefined, {
+      timeoutMs: providerCheckTimeoutMs(),
+    });
     if (result.exitCode !== 0) {
       throw new ClawpatchError(
         "acpx CLI not available. Install: npm install -g acpx@latest",
@@ -408,13 +411,7 @@ function acpxExitCode(stdout: string, stderr: string, exitCode: number | null): 
 }
 
 function acpxTimeoutMs(): number {
-  const raw =
-    process.env["CLAWPATCH_ACPX_TIMEOUT_MS"] ?? process.env["CLAWPATCH_PROVIDER_TIMEOUT_MS"];
-  if (raw === undefined) {
-    return ACPX_DEFAULT_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : ACPX_DEFAULT_TIMEOUT_MS;
+  return providerTimeoutMs("CLAWPATCH_ACPX_TIMEOUT_MS", ACPX_DEFAULT_TIMEOUT_MS);
 }
 
 function acpxPromptRetries(): number {

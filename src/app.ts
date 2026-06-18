@@ -22,7 +22,8 @@ import { stableId, runId } from "./id.js";
 import { mapWithSource } from "./agent-mapper.js";
 import { mapFeatures } from "./mapper.js";
 import { emitProgress } from "./progress.js";
-import { providerByName, type DroppedFinding } from "./provider.js";
+import { providerByName } from "./provider.js";
+import type { DroppedFinding } from "./provider-types.js";
 import { buildFixPrompt, buildReviewPromptBundle, buildRevalidatePrompt } from "./prompt.js";
 import type { ReviewMode, ReviewPromptManifest } from "./prompt.js";
 import {

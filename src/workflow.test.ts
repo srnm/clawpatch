@@ -50,7 +50,7 @@ import {
   writePatchAttempt,
 } from "./state.js";
 import { buildFixPrompt, buildReviewPrompt } from "./prompt.js";
-import type { Provider } from "./provider.js";
+import type { Provider } from "./provider-types.js";
 import { fixtureRoot, testOptions, writeFixture } from "./test-helpers.js";
 import { findingRecordSchema } from "./types.js";
 import type { FeatureRecord, PatchAttempt } from "./types.js";

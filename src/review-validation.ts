@@ -2,7 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ClawpatchError } from "./errors.js";
 import { REVIEW_PROMPT_FILE_CHAR_LIMIT, type ReviewPromptManifest } from "./prompt.js";
-import type { DroppedFinding } from "./provider.js";
+import type { DroppedFinding } from "./provider-types.js";
 import {
   evaluateFindingForDrop,
   type RegistryVerdict,

@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z, type ZodError, type ZodIssue, type ZodType } from "zod";
 import { runCommandArgs } from "./exec.js";
 import { ClawpatchError } from "./errors.js";
+import { parseOrThrow, parseReviewOutput } from "./provider-output.js";
 import {
   agentMapJsonSchema,
   fixPlanJsonSchema,
@@ -12,258 +12,20 @@ import {
   revalidateJsonSchema,
 } from "./provider-schema.js";
 import { extractJson, parseCodexJson, safeProviderPreview } from "./provider-json.js";
+import type { PartitionedReviewOutput, Provider, ProviderOptions } from "./provider-types.js";
 import {
   AgentMapOutput,
   CommandResult,
   FixPlanOutput,
-  ReviewFinding,
   RevalidateOutput,
   agentMapOutputSchema,
   fixPlanOutputSchema,
-  reviewFindingSchema,
-  reviewInspectedSchema,
-  reviewOutputSchema,
   revalidateOutputSchema,
   type CodexConfig,
   type ReasoningEffort,
 } from "./types.js";
 
 export { extractJson } from "./provider-json.js";
-
-const ZOD_VALUE_PREVIEW_LIMIT = 80;
-const ZOD_ISSUE_HEAD_LIMIT = 3;
-
-function formatZodPath(path: ReadonlyArray<PropertyKey>): string {
-  if (path.length === 0) {
-    return "<root>";
-  }
-  let out = "";
-  for (let i = 0; i < path.length; i += 1) {
-    const segment = path[i];
-    if (typeof segment === "number") {
-      out += `[${segment}]`;
-    } else if (i === 0) {
-      out += String(segment);
-    } else {
-      out += `.${String(segment)}`;
-    }
-  }
-  return out;
-}
-
-function previewZodValue(value: unknown): string {
-  let rendered: string;
-  if (typeof value === "string") {
-    rendered = JSON.stringify(value);
-  } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
-    rendered = String(value);
-  } else if (value === undefined) {
-    return "";
-  } else {
-    try {
-      rendered = JSON.stringify(value) ?? String(value);
-    } catch {
-      rendered = String(value);
-    }
-  }
-  if (rendered.length > ZOD_VALUE_PREVIEW_LIMIT) {
-    return `${rendered.slice(0, ZOD_VALUE_PREVIEW_LIMIT - 1)}…`;
-  }
-  return rendered;
-}
-
-function lookupAtPath(input: unknown, path: ReadonlyArray<PropertyKey>): unknown {
-  let cur: unknown = input;
-  for (const segment of path) {
-    if (cur === null || cur === undefined) {
-      return undefined;
-    }
-    if (typeof segment === "number") {
-      if (!Array.isArray(cur)) {
-        return undefined;
-      }
-      cur = cur[segment];
-    } else if (typeof cur === "object") {
-      cur = (cur as Record<string, unknown>)[String(segment)];
-    } else {
-      return undefined;
-    }
-  }
-  return cur;
-}
-
-export function formatZodIssue(issue: ZodIssue, input?: unknown): string {
-  const path = formatZodPath(issue.path);
-  const issueRecord = issue as ZodIssue & {
-    received?: unknown;
-    expected?: unknown;
-    values?: unknown;
-  };
-  let received: unknown;
-  let hasReceived = false;
-  if ("received" in issueRecord && issueRecord.received !== undefined) {
-    received = issueRecord.received;
-    hasReceived = true;
-  } else if (input !== undefined && issue.path.length > 0) {
-    const looked = lookupAtPath(input, issue.path);
-    if (looked !== undefined) {
-      received = looked;
-      hasReceived = true;
-    }
-  }
-  const receivedSegment = hasReceived ? `=${previewZodValue(received)}` : "";
-  let expectedSegment = "";
-  if (Array.isArray(issueRecord.values)) {
-    const list = issueRecord.values.map((v) => String(v)).join(",");
-    expectedSegment = `, expected one of ${list}`;
-  } else if (typeof issueRecord.expected === "string" && issueRecord.expected.length > 0) {
-    expectedSegment = `, expected ${issueRecord.expected}`;
-  }
-  return `${path}${receivedSegment} (${issue.code}${expectedSegment})`;
-}
-
-export function formatZodError(error: ZodError, input?: unknown): string {
-  const issues = error.issues ?? [];
-  if (issues.length === 0) {
-    return "schema validation failed";
-  }
-  const head = issues
-    .slice(0, ZOD_ISSUE_HEAD_LIMIT)
-    .map((issue) => formatZodIssue(issue, input))
-    .join("; ");
-  const more =
-    issues.length > ZOD_ISSUE_HEAD_LIMIT ? ` (+${issues.length - ZOD_ISSUE_HEAD_LIMIT} more)` : "";
-  return `schema validation failed: ${head}${more}`;
-}
-
-function parseOrThrow<T>(schema: ZodType<T>, input: unknown, label: string): T {
-  const result = schema.safeParse(input);
-  if (result.success) {
-    return result.data;
-  }
-  throw new ClawpatchError(
-    `${label}: ${formatZodError(result.error, input)}`,
-    8,
-    "malformed-output",
-  );
-}
-
-export type ProviderOptions = {
-  model: string | null;
-  reasoningEffort: ReasoningEffort | null;
-  codexConfig?: CodexConfig;
-  skipGitRepoCheck: boolean;
-};
-
-/**
- * One review finding rejected by per-finding validation. `layer` records
- * which gate dropped it: `schema` is the per-finding `reviewFindingSchema`
- * Zod parse, `validation` is the evidence/quote/line-range check in
- * `validateReviewOutputPartitioned`, and `registry-verifier` is the
- * post-validation pass that drops findings whose central claim about a
- * package version's nonexistence is refuted by the npm registry.
- * Operators can use `layer` to tell these apart: "the model emitted
- * nonsense" (schema), "the model cited a real-looking finding but quoted
- * text that isn't there" (validation), or "the model asserted a package
- * version is unpublished but the registry says otherwise"
- * (registry-verifier).
- */
-export type DroppedFinding = {
-  path: (string | number)[];
-  message: string;
-  sample: string;
-  layer?: "schema" | "validation" | "registry-verifier";
-};
-
-export type PartitionedReviewOutput = {
-  findings: ReviewFinding[];
-  inspected: z.infer<typeof reviewInspectedSchema>;
-  droppedFindings: DroppedFinding[];
-};
-
-const reviewContainerSchema = z.object({
-  findings: z.array(z.unknown()),
-  inspected: reviewInspectedSchema,
-});
-
-function truncateSample(value: unknown): string {
-  let text: string;
-  try {
-    text = JSON.stringify(value);
-  } catch {
-    text = String(value);
-  }
-  if (text === undefined) {
-    text = String(value);
-  }
-  return text.length > 200 ? `${text.slice(0, 197)}...` : text;
-}
-
-export function parseReviewOutput(output: unknown): PartitionedReviewOutput {
-  // Fast path: whole-document parse on success.
-  const whole = reviewOutputSchema.safeParse(output);
-  if (whole.success) {
-    return {
-      findings: whole.data.findings,
-      inspected: whole.data.inspected,
-      droppedFindings: [],
-    };
-  }
-
-  // Fallback: validate container shape, partition findings element-by-element.
-  const container = reviewContainerSchema.safeParse(output);
-  if (!container.success) {
-    // Container shape is fundamentally wrong (e.g. findings is not an array, or
-    // inspected is missing). Preserve today's throw contract via ClawpatchError
-    // so callers see a single clear malformed-output failure.
-    const issue = container.error.issues[0];
-    const where =
-      issue?.path
-        .map((segment) => (typeof segment === "symbol" ? segment.toString() : segment))
-        .join(".") ?? "<root>";
-    const detail = issue?.message ?? "invalid review output shape";
-    throw new ClawpatchError(
-      `provider review output is malformed at ${where}: ${detail}`,
-      8,
-      "malformed-output",
-    );
-  }
-
-  const validFindings: ReviewFinding[] = [];
-  const droppedFindings: DroppedFinding[] = [];
-  container.data.findings.forEach((candidate, idx) => {
-    const result = reviewFindingSchema.safeParse(candidate);
-    if (result.success) {
-      validFindings.push(result.data);
-      return;
-    }
-    const issue = result.error.issues[0];
-    const issuePath = (issue?.path ?? []).map((segment) =>
-      typeof segment === "symbol" ? segment.toString() : segment,
-    );
-    droppedFindings.push({
-      path: ["findings", idx, ...issuePath],
-      message: issue?.message ?? "invalid finding shape",
-      sample: truncateSample(candidate),
-      layer: "schema",
-    });
-  });
-
-  return {
-    findings: validFindings,
-    inspected: container.data.inspected,
-    droppedFindings,
-  };
-}
-
-export type Provider = {
-  name: string;
-  check(root: string): Promise<string>;
-  map(root: string, prompt: string, options: ProviderOptions): Promise<AgentMapOutput>;
-  review(root: string, prompt: string, options: ProviderOptions): Promise<PartitionedReviewOutput>;
-  fix(root: string, prompt: string, options: ProviderOptions): Promise<FixPlanOutput>;
-  revalidate(root: string, prompt: string, options: ProviderOptions): Promise<RevalidateOutput>;
-};
 
 export function providerByName(name: string): Provider {
   if (name === "codex") {
@@ -2341,12 +2103,8 @@ export const __testing = {
   assertCursorRuntimeVersionAllowed,
   parseSemver,
   parseClaudeVersion,
-  formatZodError,
-  formatZodIssue,
   parseAcpxAgent,
   parseCodexJson,
-  parseReviewOutput,
-  parseOrThrow,
   piThinkingLevel,
   providerExitCode,
   providerJsonSchema,

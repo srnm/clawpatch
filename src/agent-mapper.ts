@@ -1,7 +1,7 @@
 import { isAbsolute, join } from "node:path";
 import { buildAgentMapPrompt } from "./prompt.js";
 import { ClawpatchError } from "./errors.js";
-import { Provider, ProviderOptions } from "./provider.js";
+import type { Provider, ProviderOptions } from "./provider-types.js";
 import { AgentMapOutput, FeatureRecord, ProjectRecord } from "./types.js";
 import { pathExists } from "./fs.js";
 import { runCommandArgs } from "./exec.js";

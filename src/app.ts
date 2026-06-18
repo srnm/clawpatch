@@ -8,6 +8,7 @@ import {
 } from "./change-audit.js";
 import { loadConfig, parseReasoningEffort, resolveStateDir } from "./config.js";
 import { applyProviderFlags, newRun, providerOptions, stringFlag } from "./command-support.js";
+import { changedFiles } from "./command-selection.js";
 import { loadProjectState, type AppContext } from "./app-context.js";
 import { detectProject } from "./detect.js";
 import { ClawpatchError, assertDefined } from "./errors.js";
@@ -18,15 +19,16 @@ import {
   mergeFinding,
   parseFindingStatus,
 } from "./findings.js";
+import { refreshFeatureStatus } from "./feature-status.js";
 import { nowIso, writeJson } from "./fs.js";
-import { changedFilesSince, dirtyFiles, discoverGit } from "./git.js";
+import { discoverGit } from "./git.js";
 import { stableId, runId } from "./id.js";
 import { mapWithSource } from "./agent-mapper.js";
 import { mapFeatures } from "./mapper.js";
 import { emitProgress } from "./progress.js";
 import { providerByName } from "./provider.js";
 import type { DroppedFinding } from "./provider-types.js";
-import { buildFixPrompt, buildReviewPromptBundle, buildRevalidatePrompt } from "./prompt.js";
+import { buildFixPrompt, buildReviewPromptBundle } from "./prompt.js";
 import type { ReviewMode, ReviewPromptManifest } from "./prompt.js";
 import {
   evidenceLabel,
@@ -45,7 +47,6 @@ import {
   filterFeaturesByChangedFiles,
   filterFeaturesByProject,
   filterFindings,
-  filterFindingsByChangedOwnedFiles,
   filterFindingsByFeatures,
   limitFeatures,
   nextFinding,
@@ -85,6 +86,7 @@ import { createRpmLimiter, defaultJobs, rpmFromFlag, type RpmLimiter } from "./r
 
 export { makeContext, type AppContext } from "./app-context.js";
 export { openPrCommand } from "./open-pr.js";
+export { revalidateCommand } from "./revalidate.js";
 
 export async function initCommand(
   context: AppContext,
@@ -893,138 +895,6 @@ function isRetryableReviewError(error: unknown): boolean {
   return error instanceof ClawpatchError && error.code === "malformed-output";
 }
 
-export async function revalidateCommand(
-  context: AppContext,
-  flags: Record<string, string | boolean>,
-): Promise<unknown> {
-  const loaded = await loadProjectState(context);
-  const config = applyProviderFlags(loaded.config, flags);
-  const provider = providerByName(config.provider.name);
-  const findings = await selectRevalidationFindings(loaded, flags);
-  const [features, patchAttempts] = await Promise.all([
-    readFeatures(loaded.paths),
-    readPatchAttempts(loaded.paths),
-  ]);
-  const currentRunId = runId();
-  const currentGit = await discoverGit(loaded.root);
-  const run = newRun(currentRunId, "revalidate", context, loaded.root, currentGit.headSha);
-  run.findingIds = findings.map((finding) => finding.findingId);
-  await writeRun(loaded.paths, run);
-  const results: Array<{
-    finding: string;
-    outcome: FindingRecord["status"];
-    reasoning: string;
-  }> = [];
-  emitProgress(context, "revalidate", "start", {
-    run: currentRunId,
-    findings: findings.length,
-  });
-  try {
-    for (const [index, finding] of findings.entries()) {
-      const started = Date.now();
-      emitProgress(context, "revalidate", "finding-start", {
-        index: index + 1,
-        total: findings.length,
-        finding: finding.findingId,
-        title: finding.title,
-      });
-      const feature = assertDefined(
-        features.find((candidate) => candidate.featureId === finding.featureId),
-        `feature not found: ${finding.featureId}`,
-      );
-      const linkedPatchAttempts = patchAttempts.filter((patch) =>
-        finding.linkedPatchAttemptIds.includes(patch.patchAttemptId),
-      );
-      const prompt = await buildRevalidatePrompt(
-        loaded.root,
-        finding,
-        feature,
-        linkedPatchAttempts,
-        config,
-      );
-      const output = await provider.revalidate(loaded.root, prompt, providerOptions(config));
-      const updated = appendFindingHistory(
-        {
-          ...finding,
-          status: output.outcome,
-          updatedAt: nowIso(),
-        },
-        {
-          runId: currentRunId,
-          kind: "revalidate",
-          status: output.outcome,
-          note: null,
-          reasoning: output.reasoning,
-          commands: output.commands,
-          createdAt: nowIso(),
-        },
-      );
-      await writeFinding(loaded.paths, updated);
-      await refreshFeatureStatus(loaded.paths, finding.featureId);
-      results.push({
-        finding: finding.findingId,
-        outcome: output.outcome,
-        reasoning: output.reasoning,
-      });
-      emitProgress(context, "revalidate", "finding-done", {
-        index: index + 1,
-        total: findings.length,
-        finding: finding.findingId,
-        outcome: output.outcome,
-        elapsed: `${Math.round((Date.now() - started) / 1000)}s`,
-      });
-    }
-    await writeRun(loaded.paths, {
-      ...run,
-      status: "completed",
-      finishedAt: nowIso(),
-      findingIds: results.map((result) => result.finding),
-    });
-    emitProgress(context, "revalidate", "done", {
-      run: currentRunId,
-      revalidated: results.length,
-      fixed: results.filter((result) => result.outcome === "fixed").length,
-      open: results.filter((result) => result.outcome === "open").length,
-      uncertain: results.filter((result) => result.outcome === "uncertain").length,
-      falsePositive: results.filter((result) => result.outcome === "false-positive").length,
-    });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    await writeRun(loaded.paths, {
-      ...run,
-      status: "failed",
-      finishedAt: nowIso(),
-      findingIds: run.findingIds,
-      errors: [{ message, code: error instanceof ClawpatchError ? error.code : null }],
-    });
-    emitProgress(context, "revalidate", "failed", {
-      run: currentRunId,
-      error: message,
-    });
-    throw error;
-  }
-  if (
-    flags["all"] === true ||
-    typeof flags["since"] === "string" ||
-    flags["includeDirty"] === true
-  ) {
-    return {
-      revalidated: results.length,
-      open: results.filter((result) => result.outcome === "open").length,
-      fixed: results.filter((result) => result.outcome === "fixed").length,
-      falsePositive: results.filter((result) => result.outcome === "false-positive").length,
-      uncertain: results.filter((result) => result.outcome === "uncertain").length,
-      next: "clawpatch next",
-    };
-  }
-  const first = assertDefined(results[0], "missing revalidation result");
-  return {
-    finding: first.finding,
-    outcome: first.outcome,
-    reasoning: first.reasoning,
-  };
-}
-
 export async function fixCommand(
   context: AppContext,
   flags: Record<string, string | boolean>,
@@ -1357,58 +1227,6 @@ function parseMapSource(flags: Record<string, string | boolean>): "heuristic" | 
   );
 }
 
-async function selectRevalidationFindings(
-  loaded: Awaited<ReturnType<typeof loadProjectState>>,
-  flags: Record<string, string | boolean>,
-): Promise<FindingRecord[]> {
-  const findingId = stringFlag(flags, "finding");
-  if (flags["all"] === true || findingId === undefined) {
-    const filtered = filterFindings(await readFindings(loaded.paths), {
-      ...flags,
-      status: stringFlag(flags, "status") ?? "open",
-    });
-    const sinceFiltered = await filterFindingsByOwnedFilesSince(loaded, filtered, flags);
-    const limit = Number(stringFlag(flags, "limit") ?? String(sinceFiltered.length));
-    return sinceFiltered.slice(
-      0,
-      Number.isFinite(limit) && limit > 0 ? limit : sinceFiltered.length,
-    );
-  }
-  return filterFindingsByOwnedFilesSince(
-    loaded,
-    [assertDefined(await readFinding(loaded.paths, findingId), `finding not found: ${findingId}`)],
-    flags,
-  );
-}
-
-async function refreshFeatureStatus(
-  paths: ReturnType<typeof statePaths>,
-  featureId: string,
-): Promise<void> {
-  const [features, findings] = await Promise.all([readFeatures(paths), readFindings(paths)]);
-  const feature = features.find((candidate) => candidate.featureId === featureId);
-  if (feature === undefined) {
-    return;
-  }
-  const featureFindings = findings.filter((finding) => finding.featureId === featureId);
-  const hasUnresolved = featureFindings.some((finding) =>
-    ["open", "uncertain"].includes(finding.status),
-  );
-  if (!hasUnresolved && featureFindings.length > 0) {
-    await writeFeature(paths, {
-      ...feature,
-      status: "fixed",
-      updatedAt: nowIso(),
-    });
-  } else if (hasUnresolved && ["fixed", "revalidated", "reviewed"].includes(feature.status)) {
-    await writeFeature(paths, {
-      ...feature,
-      status: "needs-fix",
-      updatedAt: nowIso(),
-    });
-  }
-}
-
 async function selectReviewFeatures(
   loaded: Awaited<ReturnType<typeof loadProjectState>>,
   flags: Record<string, string | boolean>,
@@ -1455,20 +1273,6 @@ async function filterFeaturesByFilesSince(
   return filterFeaturesByChangedFiles(features, changed, true);
 }
 
-async function filterFindingsByOwnedFilesSince(
-  loaded: Awaited<ReturnType<typeof loadProjectState>>,
-  findings: FindingRecord[],
-  flags: Record<string, string | boolean>,
-): Promise<FindingRecord[]> {
-  const since = stringFlag(flags, "since");
-  if (since === undefined && flags["includeDirty"] !== true) {
-    return findings;
-  }
-  const changed = await changedFiles(loaded.root, flags);
-  const features = await readFeatures(loaded.paths);
-  return filterFindingsByChangedOwnedFiles(findings, features, changed);
-}
-
 export function reviewJobs(
   flags: Record<string, string | boolean>,
   coreCount: number = cpus().length,
@@ -1482,25 +1286,6 @@ export function reviewJobs(
     return Math.min(Math.floor(parsed), 32);
   }
   return defaultJobs(coreCount);
-}
-
-async function changedFiles(
-  root: string,
-  flags: Record<string, string | boolean>,
-): Promise<Set<string>> {
-  const changed = new Set<string>();
-  const since = stringFlag(flags, "since");
-  if (since !== undefined) {
-    for (const file of await changedFilesSince(root, since)) {
-      changed.add(file);
-    }
-  }
-  if (flags["includeDirty"] === true) {
-    for (const file of await dirtyFiles(root)) {
-      changed.add(file);
-    }
-  }
-  return changed;
 }
 
 function hasFileFilter(flags: Record<string, string | boolean>): boolean {

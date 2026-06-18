@@ -22,7 +22,7 @@ import { reactSeeds } from "./mappers/react.js";
 import { discoverNodeProjects } from "./mappers/projects.js";
 import { rubySeeds } from "./mappers/ruby.js";
 import { rustSeeds } from "./mappers/rust.js";
-import { nearbyTests, PathFilters, pathMatchesFilters } from "./mappers/shared.js";
+import { createNearbyTestFinder, PathFilters, pathMatchesFilters } from "./mappers/shared.js";
 import { swiftSeeds } from "./mappers/swift.js";
 import { turboTaskGraph } from "./mappers/turbo.js";
 import { FeatureMapper, FeatureSeed, MapperContext } from "./mappers/types.js";
@@ -89,6 +89,7 @@ export async function mapFeatureSeeds(
   let created = 0;
   let changed = 0;
   const now = nowIso();
+  const findNearbyTests = createNearbyTestFinder(root);
   for (const rawSeed of seeds) {
     const seed = filterSeed(rawSeed, options.filters);
     if (seed === null) {
@@ -100,8 +101,7 @@ export async function mapFeatureSeeds(
     const discoveredTests =
       seed.skipNearbyTests === true
         ? []
-        : await nearbyTests(
-            root,
+        : await findNearbyTests(
             seed.entryPath,
             Object.hasOwn(seed, "testCommand")
               ? (seed.testCommand ?? null)

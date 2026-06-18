@@ -14,6 +14,44 @@ export type PathFilters = {
   exclude: string[];
 };
 
+type WalkFiles = typeof walk;
+type NearbyTestFinder = (
+  entryPath: string,
+  testCommand: string | null,
+  seedTestPrefixes: string[],
+  seedTestNames?: string[],
+) => Promise<TestRef[]>;
+
+export function createNearbyTestFinder(
+  root: string,
+  walkFiles: WalkFiles = walk,
+): NearbyTestFinder {
+  const walks = new Map<string, Promise<string[]>>();
+  return (entryPath, testCommand, seedTestPrefixes, seedTestNames = []) =>
+    nearbyTests(
+      root,
+      entryPath,
+      testCommand,
+      seedTestPrefixes,
+      seedTestNames,
+      async (_root, prefixes, skipPath) => {
+        const skipPolicy = skipPath === shouldSkipCOrCppNearbyPath ? "c-cpp" : "default";
+        const files = await Promise.all(
+          prefixes.map((prefix) => {
+            const key = `${skipPolicy}\0${prefix}`;
+            let pending = walks.get(key);
+            if (pending === undefined) {
+              pending = walkFiles(root, [prefix], skipPath);
+              walks.set(key, pending);
+            }
+            return pending;
+          }),
+        );
+        return [...new Set(files.flat())].toSorted();
+      },
+    );
+}
+
 export function applyPathFilters(paths: string[], filters: PathFilters | undefined): string[] {
   if (filters === undefined) {
     return paths;
@@ -84,6 +122,7 @@ export async function nearbyTests(
   testCommand: string | null,
   seedTestPrefixes: string[],
   seedTestNames: string[] = [],
+  walkFiles: WalkFiles = walk,
 ): Promise<TestRef[]> {
   const dir = dirname(entryPath);
   const base = entryPath.replace(/\.[^.]+$/u, "");
@@ -91,7 +130,7 @@ export async function nearbyTests(
   const isRustEntry = entryPath.endsWith(".rs");
   const isSwiftEntry = entryPath.endsWith(".swift");
   const isCOrCppEntry = isCOrCppPath(entryPath);
-  const all = await walk(
+  const all = await walkFiles(
     root,
     [
       dir === "." ? "" : dir,

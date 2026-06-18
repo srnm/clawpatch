@@ -540,7 +540,7 @@ function shellArg(value: string): string {
 }
 
 function normalizePath(path: string): string {
-  return path.replace(/\\/gu, "/");
+  return process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
 }
 
 function uniqueStrings(values: string[]): string[] {
